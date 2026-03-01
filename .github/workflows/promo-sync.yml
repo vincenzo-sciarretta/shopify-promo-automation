@@ -1,0 +1,27 @@
+name: Sincronizzazione Promo Giornaliera
+
+on:
+  schedule:
+    - cron: '1 0 * * *'  # Esegui ogni giorno alle 00:01
+  workflow_dispatch:  # Permette esecuzione manuale
+
+jobs:
+  sync-promo:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Esegui sincronizzazione promo
+        env:
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+        run: node promo-sync.js
