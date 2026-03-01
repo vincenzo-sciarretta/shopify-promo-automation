@@ -1,4 +1,4 @@
-// promo-sync.js - Automazione Offerte del Giorno (MUTATION CORRETTA)
+// promo-sync.js - Automazione Offerte del Giorno (PRODUCT ID CORRETTO)
 const STORE = process.env.SHOPIFY_STORE;
 const TOKEN = process.env.SHOPIFY_TOKEN;
 const API_URL = `https://${STORE}.myshopify.com/admin/api/2024-01/graphql.json`;
@@ -141,10 +141,10 @@ async function saveOriginalPrice(productId, price) {
   return result;
 }
 
-async function updateVariantPrice(variantId, newPrice) {
+async function updateVariantPrice(productId, variantId, newPrice) {
   const mutation = `mutation {
     productVariantsBulkUpdate(
-      productId: "${variantId.split('/ProductVariant/')[0].replace('Variant', '')}",
+      productId: "${productId}",
       variants: [{
         id: "${variantId}",
         price: "${newPrice}"
@@ -164,6 +164,7 @@ async function updateVariantPrice(variantId, newPrice) {
   const result = await fetchGraphQL(mutation);
   
   console.log(`\n🔍 DEBUG - Aggiornamento prezzo variante:`);
+  console.log(`   Product ID: ${productId}`);
   console.log(`   Variante ID: ${variantId}`);
   console.log(`   Nuovo prezzo: ${newPrice}`);
   console.log(`   Risposta GraphQL:`, JSON.stringify(result, null, 2));
@@ -251,7 +252,7 @@ async function main() {
           // Aggiorna il prezzo solo se è diverso
           if (Math.abs(currentPrice - parseFloat(newPrice)) > 0.01) {
             console.log(`      🔄 Aggiornamento prezzo da €${currentPrice} a €${newPrice}...`);
-            const success = await updateVariantPrice(variant.id, newPrice);
+            const success = await updateVariantPrice(product.id, variant.id, newPrice);
             
             if (success) {
               console.log(`      ✅ Prezzo aggiornato: €${currentPrice} → €${newPrice}`);
