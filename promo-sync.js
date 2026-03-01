@@ -1,4 +1,4 @@
-// promo-sync.js - Automazione Offerte del Giorno (DEBUG MODE)
+// promo-sync.js - Automazione Offerte del Giorno
 const STORE = process.env.SHOPIFY_STORE;
 const TOKEN = process.env.SHOPIFY_TOKEN;
 const API_URL = `https://${STORE}.myshopify.com/admin/api/2024-01/graphql.json`;
@@ -25,13 +25,7 @@ async function getActivePromos() {
             key
             value
             type
-            reference {
-              ... on Product {
-                id
-                title
-              }
-            }
-            references(first: 10) {
+            references(first: 20) {
               edges {
                 node {
                   ... on Product {
@@ -48,52 +42,44 @@ async function getActivePromos() {
   }`;
   
   const result = await fetchGraphQL(query);
+  const now = new Date();
   
-  console.log('\n🔍 DEBUG: Dati grezzi da GraphQL:');
-  console.log(JSON.stringify(result, null, 2));
-  
-  const today = new Date().toISOString().split('T')[0];
+  console.log(`\n🕐 Data/ora corrente: ${now.toISOString()}`);
   
   return result.data.metaobjects.edges
     .map(edge => {
-      const promo = { products: [] };
-      
-      console.log('\n🔍 DEBUG: Elaborazione metaobject:', edge.node.id);
+      const promo = { products: [], nome: '' };
       
       edge.node.fields.forEach(f => {
-        console.log(`  Campo: ${f.key} | Tipo: ${f.type} | Valore: ${f.value}`);
-        
-        if (f.key === 'data_inizio') promo.data_inizio = f.value;
+        if (f.key === 'nome_promozione') promo.nome = f.value;
+        else if (f.key === 'data_inizio') promo.data_inizio = f.value;
         else if (f.key === 'data_fine') promo.data_fine = f.value;
         else if (f.key === 'sconto') promo.sconto_percentuale = f.value;
-        else if (f.key === 'prodotti') {
-          console.log('  🔍 Campo PRODOTTI trovato!');
-          console.log('  references:', f.references);
-          
-          if (f.references && f.references.edges) {
-            promo.products = f.references.edges.map(e => ({
-              id: e.node.id,
-              title: e.node.title
-            }));
-            console.log(`  ✅ Trovati ${promo.products.length} prodotti`);
-          } else {
-            console.log('  ❌ Nessun reference trovato');
-          }
+        else if (f.key === 'prodotti' && f.references && f.references.edges) {
+          promo.products = f.references.edges.map(e => ({
+            id: e.node.id,
+            title: e.node.title
+          }));
         }
       });
       
-      console.log('\n  Promo elaborata:', promo);
       return promo;
     })
     .filter(promo => {
       if (!promo.data_inizio || !promo.data_fine) {
-        console.log('⚠️ Promo senza date, saltata');
+        console.log(`⚠️ Promo "${promo.nome}": date mancanti, saltata`);
         return false;
       }
-      const start = promo.data_inizio.split('T')[0];
-      const end = promo.data_fine.split('T')[0];
-      const isActive = start <= today && end >= today;
-      console.log(`  Date: ${start} - ${end} | Oggi: ${today} | Attiva: ${isActive}`);
+      
+      const startDate = new Date(promo.data_inizio);
+      const endDate = new Date(promo.data_fine);
+      const isActive = startDate <= now && endDate >= now;
+      
+      console.log(`\n📅 Promo: "${promo.nome}"`);
+      console.log(`   Inizio: ${startDate.toISOString()}`);
+      console.log(`   Fine: ${endDate.toISOString()}`);
+      console.log(`   Stato: ${isActive ? '✅ ATTIVA' : '❌ NON ATTIVA'}`);
+      
       return isActive;
     });
 }
@@ -161,15 +147,22 @@ async function updateProductPrice(variantId, newPrice) {
 }
 
 async function main() {
-  console.log('🚀 Avvio sincronizzazione promo (DEBUG MODE)...');
+  console.log('🚀 Avvio sincronizzazione promo...');
   
   const activePromos = await getActivePromos();
   console.log(`\n✅ Trovate ${activePromos.length} promo attive`);
   
+  if (activePromos.length === 0) {
+    console.log('⚠️ Nessuna promo attiva al momento');
+    return;
+  }
+  
   for (const promo of activePromos) {
     const defaultDiscount = parseFloat(promo.sconto_percentuale) || 0;
     
-    console.log(`\n📦 Elaborazione promo con ${promo.products.length} prodotti (sconto base: ${defaultDiscount}%)`);
+    console.log(`\n📦 Elaborazione promo "${promo.nome}"`);
+    console.log(`   Prodotti: ${promo.products.length}`);
+    console.log(`   Sconto base: ${defaultDiscount}%`);
     
     if (promo.products.length === 0) {
       console.log('⚠️ ATTENZIONE: Nessun prodotto trovato nella promo!');
@@ -188,21 +181,26 @@ async function main() {
         const variant = details.variants.edges[0].node;
         const currentPrice = parseFloat(variant.price);
         
+        // Controlla se esiste uno sconto personalizzato nel metafield del prodotto
         const productDiscount = details.metafield?.value 
           ? parseFloat(details.metafield.value) 
           : defaultDiscount;
         
+        // Usa il prezzo di backup se esiste, altrimenti usa il prezzo attuale
         const originalPrice = details.originalPriceMetafield?.value
           ? parseFloat(details.originalPriceMetafield.value)
           : currentPrice;
         
+        // Salva il prezzo originale se non esiste già
         if (!details.originalPriceMetafield?.value) {
           await saveOriginalPrice(product.id, currentPrice.toFixed(2));
           console.log(`💾 Salvato prezzo originale per ${product.title}: €${currentPrice.toFixed(2)}`);
         }
         
+        // Calcola il nuovo prezzo scontato
         const newPrice = (originalPrice * (1 - productDiscount / 100)).toFixed(2);
         
+        // Aggiorna il prezzo solo se è diverso
         if (Math.abs(currentPrice - parseFloat(newPrice)) > 0.01) {
           await updateProductPrice(variant.id, newPrice);
           console.log(`✅ ${product.title}: €${originalPrice.toFixed(2)} → €${newPrice} (sconto ${productDiscount}%)`);
