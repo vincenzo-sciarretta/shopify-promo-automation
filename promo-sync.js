@@ -55,7 +55,7 @@ async function getActivePromos() {
       edge.node.fields.forEach(f => {
         if (f.key === 'data_inizio') promo.data_inizio = f.value;
         else if (f.key === 'data_fine') promo.data_fine = f.value;
-        else if (f.key === 'sconto_percentuale') promo.sconto_percentuale = f.value;
+        else if (f.key === 'sconto') promo.sconto_percentuale = f.value;
         else if (f.key === 'prodotti' && f.references) {
           promo.products = f.references.edges.map(e => ({
             id: e.node.id,
@@ -66,8 +66,9 @@ async function getActivePromos() {
       return promo;
     })
     .filter(promo => {
-      const start = promo.data_inizio?.split('T')[0];
-      const end = promo.data_fine?.split('T')[0];
+      if (!promo.data_inizio || !promo.data_fine) return false;
+      const start = promo.data_inizio.split('T')[0];
+      const end = promo.data_fine.split('T')[0];
       return start <= today && end >= today;
     });
 }
