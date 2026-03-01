@@ -1,4 +1,4 @@
-// promo-sync.js - Automazione Offerte del Giorno (DEBUG AVANZATO)
+// promo-sync.js - Automazione Offerte del Giorno (MUTATION CORRETTA)
 const STORE = process.env.SHOPIFY_STORE;
 const TOKEN = process.env.SHOPIFY_TOKEN;
 const API_URL = `https://${STORE}.myshopify.com/admin/api/2024-01/graphql.json`;
@@ -89,11 +89,12 @@ async function getProductDetails(productId) {
     product(id: "${productId}") {
       id
       title
-      variants(first: 1) {
+      variants(first: 10) {
         edges {
           node {
             id
             price
+            displayName
           }
         }
       }
@@ -133,11 +134,6 @@ async function saveOriginalPrice(productId, price) {
   
   const result = await fetchGraphQL(mutation);
   
-  console.log(`\n🔍 DEBUG - Salvataggio prezzo originale:`);
-  console.log(`   Prodotto: ${productId}`);
-  console.log(`   Prezzo: ${price}`);
-  console.log(`   Risposta GraphQL:`, JSON.stringify(result, null, 2));
-  
   if (result.data?.productUpdate?.userErrors?.length > 0) {
     console.error(`❌ ERRORE salvataggio prezzo:`, result.data.productUpdate.userErrors);
   }
@@ -145,13 +141,16 @@ async function saveOriginalPrice(productId, price) {
   return result;
 }
 
-async function updateProductPrice(variantId, newPrice) {
+async function updateVariantPrice(variantId, newPrice) {
   const mutation = `mutation {
-    productVariantUpdate(input: {
-      id: "${variantId}",
-      price: "${newPrice}"
-    }) {
-      productVariant {
+    productVariantsBulkUpdate(
+      productId: "${variantId.split('/ProductVariant/')[0].replace('Variant', '')}",
+      variants: [{
+        id: "${variantId}",
+        price: "${newPrice}"
+      }]
+    ) {
+      productVariants {
         id
         price
       }
@@ -169,13 +168,13 @@ async function updateProductPrice(variantId, newPrice) {
   console.log(`   Nuovo prezzo: ${newPrice}`);
   console.log(`   Risposta GraphQL:`, JSON.stringify(result, null, 2));
   
-  if (result.data?.productVariantUpdate?.userErrors?.length > 0) {
-    console.error(`❌ ERRORE aggiornamento prezzo:`, result.data.productVariantUpdate.userErrors);
+  if (result.data?.productVariantsBulkUpdate?.userErrors?.length > 0) {
+    console.error(`❌ ERRORE aggiornamento prezzo:`, result.data.productVariantsBulkUpdate.userErrors);
     return false;
   }
   
-  if (result.data?.productVariantUpdate?.productVariant) {
-    console.log(`✅ Prezzo aggiornato con successo! Nuovo prezzo: ${result.data.productVariantUpdate.productVariant.price}`);
+  if (result.data?.productVariantsBulkUpdate?.productVariants) {
+    console.log(`✅ Prezzo aggiornato con successo!`);
     return true;
   }
   
@@ -211,16 +210,10 @@ async function main() {
         
         const details = await getProductDetails(product.id);
         
-        if (!details || !details.variants.edges[0]) {
-          console.log(`⚠️ Prodotto ${product.title}: dati non trovati`);
+        if (!details || !details.variants.edges.length) {
+          console.log(`⚠️ Prodotto ${product.title}: nessuna variante trovata`);
           continue;
         }
-        
-        const variant = details.variants.edges[0].node;
-        const currentPrice = parseFloat(variant.price);
-        
-        console.log(`   Variante ID: ${variant.id}`);
-        console.log(`   Prezzo attuale: €${currentPrice}`);
         
         // Controlla se esiste uno sconto personalizzato nel metafield del prodotto
         const productDiscount = details.metafield?.value 
@@ -228,38 +221,49 @@ async function main() {
           : defaultDiscount;
         
         console.log(`   Sconto da applicare: ${productDiscount}%`);
+        console.log(`   Varianti trovate: ${details.variants.edges.length}`);
         
-        // Usa il prezzo di backup se esiste, altrimenti usa il prezzo attuale
-        const originalPrice = details.originalPriceMetafield?.value
-          ? parseFloat(details.originalPriceMetafield.value)
-          : currentPrice;
-        
-        console.log(`   Prezzo originale (backup): €${originalPrice}`);
-        
-        // Salva il prezzo originale se non esiste già
-        if (!details.originalPriceMetafield?.value) {
-          console.log(`   💾 Salvataggio prezzo originale...`);
-          await saveOriginalPrice(product.id, currentPrice.toFixed(2));
-        }
-        
-        // Calcola il nuovo prezzo scontato
-        const newPrice = (originalPrice * (1 - productDiscount / 100)).toFixed(2);
-        
-        console.log(`   Calcolo: €${originalPrice} × (1 - ${productDiscount}/100) = €${newPrice}`);
-        
-        // Aggiorna il prezzo solo se è diverso
-        if (Math.abs(currentPrice - parseFloat(newPrice)) > 0.01) {
-          console.log(`   🔄 Aggiornamento prezzo da €${currentPrice} a €${newPrice}...`);
-          const success = await updateProductPrice(variant.id, newPrice);
+        // Elabora TUTTE le varianti del prodotto
+        for (const variantEdge of details.variants.edges) {
+          const variant = variantEdge.node;
+          const currentPrice = parseFloat(variant.price);
           
-          if (success) {
-            console.log(`✅ ${product.title}: €${originalPrice.toFixed(2)} → €${newPrice} (sconto ${productDiscount}%)`);
-          } else {
-            console.log(`❌ ${product.title}: ERRORE durante l'aggiornamento!`);
+          console.log(`\n   📦 Variante: ${variant.displayName}`);
+          console.log(`      ID: ${variant.id}`);
+          console.log(`      Prezzo attuale: €${currentPrice}`);
+          
+          // Usa il prezzo di backup se esiste, altrimenti usa il prezzo attuale
+          const originalPrice = details.originalPriceMetafield?.value
+            ? parseFloat(details.originalPriceMetafield.value)
+            : currentPrice;
+          
+          // Salva il prezzo originale se non esiste già (solo per la prima variante)
+          if (!details.originalPriceMetafield?.value && variantEdge === details.variants.edges[0]) {
+            console.log(`      💾 Salvataggio prezzo originale...`);
+            await saveOriginalPrice(product.id, currentPrice.toFixed(2));
           }
-        } else {
-          console.log(`⏭️ ${product.title}: prezzo già aggiornato (€${newPrice})`);
+          
+          // Calcola il nuovo prezzo scontato
+          const newPrice = (currentPrice * (1 - productDiscount / 100)).toFixed(2);
+          
+          console.log(`      Calcolo: €${currentPrice} × (1 - ${productDiscount}/100) = €${newPrice}`);
+          
+          // Aggiorna il prezzo solo se è diverso
+          if (Math.abs(currentPrice - parseFloat(newPrice)) > 0.01) {
+            console.log(`      🔄 Aggiornamento prezzo da €${currentPrice} a €${newPrice}...`);
+            const success = await updateVariantPrice(variant.id, newPrice);
+            
+            if (success) {
+              console.log(`      ✅ Prezzo aggiornato: €${currentPrice} → €${newPrice}`);
+            } else {
+              console.log(`      ❌ ERRORE durante l'aggiornamento!`);
+            }
+          } else {
+            console.log(`      ⏭️ Prezzo già aggiornato (€${newPrice})`);
+          }
         }
+        
+        console.log(`\n✅ ${product.title}: tutte le varianti elaborate (sconto ${productDiscount}%)`);
         
       } catch (err) {
         console.error(`❌ Errore elaborazione ${product.title}:`, err.message);
