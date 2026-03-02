@@ -1,36 +1,67 @@
-// promo-sync.js - Automazione Offerte del Giorno (PRODUCT ID CORRETTO)
-const STORE = process.env.SHOPIFY_STORE;
-const TOKEN = process.env.SHOPIFY_TOKEN;
-const API_URL = `https://${STORE}.myshopify.com/admin/api/2024-01/graphql.json`;
+// promo-sync.js - Automazione prezzi promo con gestione varianti
+const fetch = require('node-fetch');
 
-async function fetchGraphQL(query) {
-  const response = await fetch(API_URL, {
+const SHOP = process.env.SHOPIFY_SHOP; // es: tuttobeautyshop.myshopify.com
+const ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const API_VERSION = '2024-01';
+
+const GRAPHQL_ENDPOINT = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
+
+// Funzione per eseguire query GraphQL
+async function graphqlQuery(query, variables = {}) {
+  const response = await fetch(GRAPHQL_ENDPOINT, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': TOKEN
+      'X-Shopify-Access-Token': ACCESS_TOKEN,
     },
-    body: JSON.stringify({ query })
+    body: JSON.stringify({ query, variables }),
   });
-  return response.json();
+
+  const result = await response.json();
+  
+  if (result.errors) {
+    console.error('GraphQL Errors:', JSON.stringify(result.errors, null, 2));
+    throw new Error('GraphQL query failed');
+  }
+  
+  return result.data;
 }
 
+// Recupera tutte le promo attive dal metaobject calendario_promo
 async function getActivePromos() {
-  const query = `{
-    metaobjects(type: "calendario_promo", first: 10) {
-      edges {
-        node {
-          id
-          fields {
-            key
-            value
-            type
-            references(first: 20) {
-              edges {
-                node {
-                  ... on Product {
+  const today = new Date().toISOString().split('T')[0];
+  
+  const query = `
+    query {
+      metaobjects(type: "calendario_promo", first: 50) {
+        edges {
+          node {
+            id
+            fields {
+              key
+              value
+              reference {
+                ... on ProductVariant {
+                  id
+                  price
+                  product {
                     id
                     title
+                  }
+                }
+              }
+              references(first: 50) {
+                edges {
+                  node {
+                    ... on ProductVariant {
+                      id
+                      price
+                      product {
+                        id
+                        title
+                      }
+                    }
                   }
                 }
               }
@@ -39,245 +70,190 @@ async function getActivePromos() {
         }
       }
     }
-  }`;
-  
-  const result = await fetchGraphQL(query);
-  const now = new Date();
-  
-  console.log(`\n🕐 Data/ora corrente: ${now.toISOString()}`);
-  
-  return result.data.metaobjects.edges
-    .map(edge => {
-      const promo = { products: [], nome: '' };
-      
-      edge.node.fields.forEach(f => {
-        if (f.key === 'nome_promozione') promo.nome = f.value;
-        else if (f.key === 'data_inizio') promo.data_inizio = f.value;
-        else if (f.key === 'data_fine') promo.data_fine = f.value;
-        else if (f.key === 'sconto') promo.sconto_percentuale = f.value;
-        else if (f.key === 'prodotti' && f.references && f.references.edges) {
-          promo.products = f.references.edges.map(e => ({
-            id: e.node.id,
-            title: e.node.title
-          }));
-        }
-      });
-      
-      return promo;
-    })
-    .filter(promo => {
-      if (!promo.data_inizio || !promo.data_fine) {
-        console.log(`⚠️ Promo "${promo.nome}": date mancanti, saltata`);
-        return false;
-      }
-      
-      const startDate = new Date(promo.data_inizio);
-      const endDate = new Date(promo.data_fine);
-      const isActive = startDate <= now && endDate >= now;
-      
-      console.log(`\n📅 Promo: "${promo.nome}"`);
-      console.log(`   Inizio: ${startDate.toISOString()}`);
-      console.log(`   Fine: ${endDate.toISOString()}`);
-      console.log(`   Stato: ${isActive ? '✅ ATTIVA' : '❌ NON ATTIVA'}`);
-      
-      return isActive;
+  `;
+
+  const data = await graphqlQuery(query);
+  const promos = [];
+
+  for (const edge of data.metaobjects.edges) {
+    const fields = edge.node.fields;
+    
+    const dataInizio = fields.find(f => f.key === 'data_inizio')?.value;
+    const dataFine = fields.find(f => f.key === 'data_fine')?.value;
+    const sconto = parseFloat(fields.find(f => f.key === 'sconto')?.value || 0);
+    const nomePromo = fields.find(f => f.key === 'nome_promozione')?.value;
+    const prezzoOriginale = parseFloat(fields.find(f => f.key === 'prezzo_originale')?.value || 0);
+    
+    // Recupera le varianti dal campo "prodotti" (lista di riferimenti)
+    const prodottiField = fields.find(f => f.key === 'prodotti');
+    const varianti = prodottiField?.references?.edges.map(e => e.node) || [];
+
+    // Verifica se la promo è attiva oggi
+    const isActive = dataInizio <= today && today <= dataFine;
+
+    promos.push({
+      id: edge.node.id,
+      nome: nomePromo,
+      dataInizio,
+      dataFine,
+      sconto,
+      prezzoOriginale,
+      varianti,
+      isActive,
     });
+  }
+
+  return promos;
 }
 
-async function getProductDetails(productId) {
-  const query = `{
-    product(id: "${productId}") {
-      id
-      title
-      variants(first: 10) {
-        edges {
-          node {
-            id
-            price
-            displayName
-          }
+// Aggiorna il prezzo di una variante
+async function updateVariantPrice(variantId, newPrice) {
+  const mutation = `
+    mutation productVariantUpdate($input: ProductVariantInput!) {
+      productVariantUpdate(input: $input) {
+        productVariant {
+          id
+          price
+        }
+        userErrors {
+          field
+          message
         }
       }
-      metafield(namespace: "custom", key: "sconto_promo") {
-        value
-      }
-      originalPriceMetafield: metafield(namespace: "custom", key: "prezzo_originale_backup") {
-        value
-      }
     }
-  }`;
-  
-  const result = await fetchGraphQL(query);
-  return result.data.product;
-}
+  `;
 
-async function saveOriginalPrice(productId, price) {
-  const mutation = `mutation {
-    productUpdate(input: {
-      id: "${productId}",
-      metafields: [{
-        namespace: "custom",
-        key: "prezzo_originale_backup",
-        value: "${price}",
-        type: "number_decimal"
-      }]
-    }) {
-      product {
-        id
-      }
-      userErrors {
-        field
-        message
-      }
-    }
-  }`;
+  const variables = {
+    input: {
+      id: variantId,
+      price: newPrice.toFixed(2),
+    },
+  };
+
+  const data = await graphqlQuery(mutation, variables);
   
-  const result = await fetchGraphQL(mutation);
-  
-  if (result.data?.productUpdate?.userErrors?.length > 0) {
-    console.error(`❌ ERRORE salvataggio prezzo:`, result.data.productUpdate.userErrors);
+  if (data.productVariantUpdate.userErrors.length > 0) {
+    console.error('Errori aggiornamento variante:', data.productVariantUpdate.userErrors);
+    throw new Error('Errore aggiornamento prezzo variante');
   }
-  
-  return result;
+
+  return data.productVariantUpdate.productVariant;
 }
 
-async function updateVariantPrice(productId, variantId, newPrice) {
-  const mutation = `mutation {
-    productVariantsBulkUpdate(
-      productId: "${productId}",
-      variants: [{
-        id: "${variantId}",
-        price: "${newPrice}"
-      }]
-    ) {
-      productVariants {
+// Salva il prezzo originale nel metafield della variante (backup)
+async function saveOriginalPrice(variantId, originalPrice) {
+  const mutation = `
+    mutation metafieldsSet($metafields: [MetafieldsSetInput!]!) {
+      metafieldsSet(metafields: $metafields) {
+        metafields {
+          id
+          value
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  const variables = {
+    metafields: [
+      {
+        ownerId: variantId,
+        namespace: 'promo',
+        key: 'backup_price',
+        value: originalPrice.toString(),
+        type: 'number_decimal',
+      },
+    ],
+  };
+
+  await graphqlQuery(mutation, variables);
+}
+
+// Recupera il prezzo di backup dalla variante
+async function getBackupPrice(variantId) {
+  const query = `
+    query getVariant($id: ID!) {
+      productVariant(id: $id) {
         id
         price
-      }
-      userErrors {
-        field
-        message
+        metafield(namespace: "promo", key: "backup_price") {
+          value
+        }
       }
     }
-  }`;
+  `;
+
+  const data = await graphqlQuery(query, { id: variantId });
+  const backupPrice = data.productVariant.metafield?.value;
   
-  const result = await fetchGraphQL(mutation);
-  
-  console.log(`\n🔍 DEBUG - Aggiornamento prezzo variante:`);
-  console.log(`   Product ID: ${productId}`);
-  console.log(`   Variante ID: ${variantId}`);
-  console.log(`   Nuovo prezzo: ${newPrice}`);
-  console.log(`   Risposta GraphQL:`, JSON.stringify(result, null, 2));
-  
-  if (result.data?.productVariantsBulkUpdate?.userErrors?.length > 0) {
-    console.error(`❌ ERRORE aggiornamento prezzo:`, result.data.productVariantsBulkUpdate.userErrors);
-    return false;
-  }
-  
-  if (result.data?.productVariantsBulkUpdate?.productVariants) {
-    console.log(`✅ Prezzo aggiornato con successo!`);
-    return true;
-  }
-  
-  return false;
+  return backupPrice ? parseFloat(backupPrice) : null;
 }
 
+// Funzione principale
 async function main() {
   console.log('🚀 Avvio sincronizzazione promo...');
   
-  const activePromos = await getActivePromos();
-  console.log(`\n✅ Trovate ${activePromos.length} promo attive`);
-  
-  if (activePromos.length === 0) {
-    console.log('⚠️ Nessuna promo attiva al momento');
-    return;
-  }
-  
-  for (const promo of activePromos) {
-    const defaultDiscount = parseFloat(promo.sconto_percentuale) || 0;
-    
-    console.log(`\n📦 Elaborazione promo "${promo.nome}"`);
-    console.log(`   Prodotti: ${promo.products.length}`);
-    console.log(`   Sconto base: ${defaultDiscount}%`);
-    
-    if (promo.products.length === 0) {
-      console.log('⚠️ ATTENZIONE: Nessun prodotto trovato nella promo!');
-      continue;
-    }
-    
-    for (const product of promo.products) {
-      try {
-        console.log(`\n--- Elaborazione prodotto: ${product.title} ---`);
+  const promos = await getActivePromos();
+  console.log(`📋 Trovate ${promos.length} promo nel calendario`);
+
+  for (const promo of promos) {
+    console.log(`\n📌 Promo: ${promo.nome}`);
+    console.log(`   Periodo: ${promo.dataInizio} → ${promo.dataFine}`);
+    console.log(`   Sconto: ${promo.sconto}%`);
+    console.log(`   Varianti: ${promo.varianti.length}`);
+    console.log(`   Attiva: ${promo.isActive ? '✅ SÌ' : '❌ NO'}`);
+
+    for (const variante of promo.varianti) {
+      const variantId = variante.id;
+      const currentPrice = parseFloat(variante.price);
+      const productTitle = variante.product.title;
+
+      if (promo.isActive) {
+        // APPLICA SCONTO
         
-        const details = await getProductDetails(product.id);
+        // 1. Recupera il prezzo di backup (se esiste)
+        let backupPrice = await getBackupPrice(variantId);
         
-        if (!details || !details.variants.edges.length) {
-          console.log(`⚠️ Prodotto ${product.title}: nessuna variante trovata`);
-          continue;
+        // 2. Se non esiste backup, usa prezzo_originale dal metaobject o prezzo corrente
+        if (!backupPrice) {
+          backupPrice = promo.prezzoOriginale > 0 ? promo.prezzoOriginale : currentPrice;
+          await saveOriginalPrice(variantId, backupPrice);
+          console.log(`   💾 Salvato backup: €${backupPrice.toFixed(2)} per ${productTitle}`);
         }
-        
-        // Controlla se esiste uno sconto personalizzato nel metafield del prodotto
-        const productDiscount = details.metafield?.value 
-          ? parseFloat(details.metafield.value) 
-          : defaultDiscount;
-        
-        console.log(`   Sconto da applicare: ${productDiscount}%`);
-        console.log(`   Varianti trovate: ${details.variants.edges.length}`);
-        
-        // Elabora TUTTE le varianti del prodotto
-        for (const variantEdge of details.variants.edges) {
-          const variant = variantEdge.node;
-          const currentPrice = parseFloat(variant.price);
-          
-          console.log(`\n   📦 Variante: ${variant.displayName}`);
-          console.log(`      ID: ${variant.id}`);
-          console.log(`      Prezzo attuale: €${currentPrice}`);
-          
-          // Usa il prezzo di backup se esiste, altrimenti usa il prezzo attuale
-          const originalPrice = details.originalPriceMetafield?.value
-            ? parseFloat(details.originalPriceMetafield.value)
-            : currentPrice;
-          
-          // Salva il prezzo originale se non esiste già (solo per la prima variante)
-          if (!details.originalPriceMetafield?.value && variantEdge === details.variants.edges[0]) {
-            console.log(`      💾 Salvataggio prezzo originale...`);
-            await saveOriginalPrice(product.id, currentPrice.toFixed(2));
-          }
-          
-          // Calcola il nuovo prezzo scontato
-          const newPrice = (currentPrice * (1 - productDiscount / 100)).toFixed(2);
-          
-          console.log(`      Calcolo: €${currentPrice} × (1 - ${productDiscount}/100) = €${newPrice}`);
-          
-          // Aggiorna il prezzo solo se è diverso
-          if (Math.abs(currentPrice - parseFloat(newPrice)) > 0.01) {
-            console.log(`      🔄 Aggiornamento prezzo da €${currentPrice} a €${newPrice}...`);
-            const success = await updateVariantPrice(product.id, variant.id, newPrice);
-            
-            if (success) {
-              console.log(`      ✅ Prezzo aggiornato: €${currentPrice} → €${newPrice}`);
-            } else {
-              console.log(`      ❌ ERRORE durante l'aggiornamento!`);
-            }
-          } else {
-            console.log(`      ⏭️ Prezzo già aggiornato (€${newPrice})`);
-          }
+
+        // 3. Calcola prezzo scontato dal backup
+        const discountedPrice = backupPrice * (1 - promo.sconto / 100);
+
+        // 4. Applica solo se diverso dal prezzo corrente
+        if (Math.abs(currentPrice - discountedPrice) > 0.01) {
+          await updateVariantPrice(variantId, discountedPrice);
+          console.log(`   ✅ ${productTitle}: €${currentPrice.toFixed(2)} → €${discountedPrice.toFixed(2)}`);
+        } else {
+          console.log(`   ⏭️  ${productTitle}: già scontato a €${discountedPrice.toFixed(2)}`);
         }
+
+      } else {
+        // RIPRISTINA PREZZO ORIGINALE
         
-        console.log(`\n✅ ${product.title}: tutte le varianti elaborate (sconto ${productDiscount}%)`);
+        const backupPrice = await getBackupPrice(variantId);
         
-      } catch (err) {
-        console.error(`❌ Errore elaborazione ${product.title}:`, err.message);
-        console.error(`   Stack trace:`, err.stack);
+        if (backupPrice && Math.abs(currentPrice - backupPrice) > 0.01) {
+          await updateVariantPrice(variantId, backupPrice);
+          console.log(`   🔄 ${productTitle}: €${currentPrice.toFixed(2)} → €${backupPrice.toFixed(2)} (ripristinato)`);
+        } else {
+          console.log(`   ⏭️  ${productTitle}: già al prezzo originale €${currentPrice.toFixed(2)}`);
+        }
       }
     }
   }
-  
+
   console.log('\n✅ Sincronizzazione completata!');
 }
 
-main().catch(err => {
-  console.error('❌ Errore fatale:', err);
-  console.error('Stack trace:', err.stack);
+main().catch(error => {
+  console.error('❌ Errore:', error);
   process.exit(1);
 });
