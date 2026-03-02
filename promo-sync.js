@@ -106,58 +106,35 @@ async function getActivePromos() {
   return promos;
 }
 
-// Aggiorna il prezzo di una variante
+// Aggiorna il prezzo di una variante usando REST API
 async function updateVariantPrice(variantId, newPrice) {
-  // Prima recuperiamo il productId dalla variante
-  const getProductQuery = `
-    query getProduct($id: ID!) {
-      productVariant(id: $id) {
-        id
-        product {
-          id
-        }
-      }
-    }
-  `;
+  // Estrai l'ID numerico dal GID
+  const numericId = variantId.split('/').pop();
   
-  const variantData = await graphqlQuery(getProductQuery, { id: variantId });
-  const productId = variantData.productVariant.product.id;
+  const url = `https://${SHOP}/admin/api/${API_VERSION}/variants/${numericId}.json`;
   
-  // Poi aggiorniamo il prodotto con la variante modificata
-  const mutation = `
-    mutation productUpdate($input: ProductInput!) {
-      productUpdate(input: $input) {
-        product {
-          id
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-  `;
-
-  const variables = {
-    input: {
-      id: productId,
-      variants: [
-        {
-          id: variantId,
-          price: newPrice.toFixed(2),
-        },
-      ],
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': ACCESS_TOKEN,
     },
-  };
+    body: JSON.stringify({
+      variant: {
+        id: parseInt(numericId),
+        price: newPrice.toFixed(2),
+      },
+    }),
+  });
 
-  const data = await graphqlQuery(mutation, variables);
+  const result = await response.json();
   
-  if (data.productUpdate.userErrors.length > 0) {
-    console.error('Errori aggiornamento variante:', data.productUpdate.userErrors);
+  if (!response.ok) {
+    console.error('REST API Error:', result);
     throw new Error('Errore aggiornamento prezzo variante');
   }
 
-  return data.productUpdate.product;
+  return result.variant;
 }
 
 // Salva il prezzo originale nel metafield della variante (backup)
