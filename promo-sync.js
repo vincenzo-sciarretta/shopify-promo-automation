@@ -10,10 +10,26 @@
  *  - Refactor: basePrice sempre letto dal backup metafield
  */
 const fetch = require("node-fetch");
-const SHOP_DOMAIN   = process.env.SHOPIFY_SHOP_DOMAIN;   // es. tuttobeautyshop.myshopify.com
-const ACCESS_TOKEN  = process.env.SHOPIFY_ACCESS_TOKEN;
+const SHOP_DOMAIN   = (process.env.SHOPIFY_SHOP_DOMAIN || "").trim();   // es. tuttobeautyshop.myshopify.com
+const ACCESS_TOKEN  = (process.env.SHOPIFY_ACCESS_TOKEN || "").trim();
 const API_VERSION   = "2025-01";
 const RATE_DELAY_MS = 400; // ms tra le chiamate REST (evita 429)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VALIDAZIONE VARIABILI D'AMBIENTE
+// ─────────────────────────────────────────────────────────────────────────────
+if (!SHOP_DOMAIN || !ACCESS_TOKEN) {
+  console.error("❌ SHOPIFY_SHOP_DOMAIN o SHOPIFY_ACCESS_TOKEN non configurati");
+  process.exit(1);
+}
+
+// Caratteri illegali negli header HTTP
+if (/[\r\n\t]/.test(ACCESS_TOKEN)) {
+  console.error("❌ ACCESS_TOKEN contiene caratteri non validi (newline/tab). Controlla il secret GitHub.");
+  process.exit(1);
+}
+
+console.log(`✅ Config: domain=${SHOP_DOMAIN}, token=${ACCESS_TOKEN.slice(0, 8)}...`);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UTILITY
