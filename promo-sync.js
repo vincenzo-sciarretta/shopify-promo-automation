@@ -1,5 +1,3 @@
-Promo sync · JS
-Copia
 
 /**
  * promo-sync.js — v2.2
