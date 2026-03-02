@@ -1,5 +1,6 @@
 // promo-sync.js
-// Shopify Promo Automation v2.0
+// Shopify Promo Automation v2.1
+// FIX metaobject field parsing
 // API Version: 2025-01
 
 const fetch = require("node-fetch");
@@ -39,10 +40,9 @@ async function fetchPromos() {
                 node {
                   ... on Metaobject {
                     id
-                    field(key: "sconto_percentuale") {
+                    fields {
+                      key
                       value
-                    }
-                    field(key: "variante") {
                       reference {
                         ... on ProductVariant {
                           id
@@ -85,8 +85,12 @@ async function fetchPromos() {
 }
 
 /* =====================================================
-   DATE CHECK
+   UTILS
 ===================================================== */
+
+function getField(fields, key) {
+  return fields.find((f) => f.key === key);
+}
 
 function isPromoActive(start, end) {
   const now = new Date();
@@ -94,7 +98,7 @@ function isPromoActive(start, end) {
 }
 
 /* =====================================================
-   SAVE BACKUP METAFIELD
+   SAVE BACKUP
 ===================================================== */
 
 async function saveBackupPrice(variantId, price) {
@@ -118,12 +122,12 @@ async function saveBackupPrice(variantId, price) {
     })
   });
 
-  console.log(`💾 Backup salvato per variante ${numericId}`);
+  console.log(`💾 Backup salvato variante ${numericId}`);
   await delay(400);
 }
 
 /* =====================================================
-   UPDATE VARIANT (APPLICA SCONTO)
+   APPLY DISCOUNT
 ===================================================== */
 
 async function updateVariantPrice(variant, discountPercent) {
@@ -139,7 +143,6 @@ async function updateVariantPrice(variant, discountPercent) {
 
   const basePrice = backup || currentPrice;
 
-  // Salva backup solo se non esiste
   if (!backup) {
     await saveBackupPrice(variant.id, currentPrice);
   }
@@ -177,7 +180,7 @@ async function updateVariantPrice(variant, discountPercent) {
     console.error(`❌ Errore update variante ${numericId}`);
   } else {
     console.log(
-      `🔥 Sconto ${discountPercent}% applicato a variante ${numericId} → ${newPrice}€`
+      `🔥 ${discountPercent}% applicato a variante ${numericId} → ${newPrice}€`
     );
   }
 
@@ -185,7 +188,7 @@ async function updateVariantPrice(variant, discountPercent) {
 }
 
 /* =====================================================
-   RIPRISTINO VARIANTE
+   RESTORE
 ===================================================== */
 
 async function restoreVariantPrice(variant) {
@@ -212,8 +215,7 @@ async function restoreVariantPrice(variant) {
     })
   });
 
-  console.log(`♻ Prezzo ripristinato variante ${numericId}`);
-
+  console.log(`♻ Ripristinata variante ${numericId}`);
   await delay(400);
 }
 
@@ -222,7 +224,7 @@ async function restoreVariantPrice(variant) {
 ===================================================== */
 
 (async () => {
-  console.log("🚀 Avvio sincronizzazione promo...");
+  console.log("🚀 Avvio sincronizzazione promo...\n");
 
   const promos = await fetchPromos();
 
@@ -232,34 +234,39 @@ async function restoreVariantPrice(variant) {
   for (const edge of promos) {
     const promo = edge.node;
 
-    const fields = Object.fromEntries(
-      promo.fields.map((f) => [f.key, f.value])
-    );
+    const promoFields = promo.fields;
 
-    const active = isPromoActive(
-      fields.data_inizio,
-      fields.data_fine
+    const nome = getField(promoFields, "nome_promozione")?.value;
+    const dataInizio = getField(promoFields, "data_inizio")?.value;
+    const dataFine = getField(promoFields, "data_fine")?.value;
+
+    const active = isPromoActive(dataInizio, dataFine);
+
+    console.log(
+      `📦 Promo: ${nome} → ${active ? "ATTIVA" : "NON ATTIVA"}`
     );
 
     const righe =
       promo.field?.references?.edges || [];
 
-    console.log(
-      `\n📦 Promo: ${fields.nome_promozione} → ${
-        active ? "ATTIVA" : "NON ATTIVA"
-      }`
-    );
-
     for (const r of righe) {
       const riga = r.node;
-      const discount = parseFloat(
-        riga.field("sconto_percentuale")?.value
+      const rigaFields = riga.fields;
+
+      const scontoField = getField(
+        rigaFields,
+        "sconto_percentuale"
       );
 
-      const variant =
-        riga.field("variante")?.reference;
+      const varianteField = getField(
+        rigaFields,
+        "variante"
+      );
 
-      if (!variant) continue;
+      if (!scontoField || !varianteField?.reference) continue;
+
+      const discount = parseFloat(scontoField.value);
+      const variant = varianteField.reference;
 
       if (active) {
         await updateVariantPrice(variant, discount);
@@ -269,10 +276,12 @@ async function restoreVariantPrice(variant) {
         restored++;
       }
     }
+
+    console.log("");
   }
 
-  console.log("\n===============================");
+  console.log("=================================");
   console.log(`✅ Varianti aggiornate: ${updated}`);
   console.log(`♻ Varianti ripristinate: ${restored}`);
-  console.log("🏁 Fine esecuzione");
+  console.log("🏁 Fine esecuzione\n");
 })();
