@@ -9,7 +9,7 @@
  *  - New: funzione resetAllActivePromos (utility manuale)
  *  - Refactor: basePrice sempre letto dal backup metafield
  */
-
+const fetch = require("node-fetch");
 const SHOP_DOMAIN   = process.env.SHOPIFY_SHOP_DOMAIN;   // es. tuttobeautyshop.myshopify.com
 const ACCESS_TOKEN  = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_VERSION   = "2025-01";
