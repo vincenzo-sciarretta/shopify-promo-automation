@@ -3,7 +3,6 @@ const fetch = require('node-fetch');
 
 const SHOP = process.env.SHOPIFY_STORE;
 const ACCESS_TOKEN = process.env.SHOPIFY_TOKEN;
-
 const API_VERSION = '2024-10';
 
 const GRAPHQL_ENDPOINT = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
@@ -109,12 +108,27 @@ async function getActivePromos() {
 
 // Aggiorna il prezzo di una variante
 async function updateVariantPrice(variantId, newPrice) {
-  const mutation = `
-    mutation productVariantUpdate($input: ProductVariantInput!) {
-      productVariantUpdate(input: $input) {
-        productVariant {
+  // Prima recuperiamo il productId dalla variante
+  const getProductQuery = `
+    query getProduct($id: ID!) {
+      productVariant(id: $id) {
+        id
+        product {
           id
-          price
+        }
+      }
+    }
+  `;
+  
+  const variantData = await graphqlQuery(getProductQuery, { id: variantId });
+  const productId = variantData.productVariant.product.id;
+  
+  // Poi aggiorniamo il prodotto con la variante modificata
+  const mutation = `
+    mutation productUpdate($input: ProductInput!) {
+      productUpdate(input: $input) {
+        product {
+          id
         }
         userErrors {
           field
@@ -126,19 +140,24 @@ async function updateVariantPrice(variantId, newPrice) {
 
   const variables = {
     input: {
-      id: variantId,
-      price: newPrice.toFixed(2),
+      id: productId,
+      variants: [
+        {
+          id: variantId,
+          price: newPrice.toFixed(2),
+        },
+      ],
     },
   };
 
   const data = await graphqlQuery(mutation, variables);
   
-  if (data.productVariantUpdate.userErrors.length > 0) {
-    console.error('Errori aggiornamento variante:', data.productVariantUpdate.userErrors);
+  if (data.productUpdate.userErrors.length > 0) {
+    console.error('Errori aggiornamento variante:', data.productUpdate.userErrors);
     throw new Error('Errore aggiornamento prezzo variante');
   }
 
-  return data.productVariantUpdate.productVariant;
+  return data.productUpdate.product;
 }
 
 // Salva il prezzo originale nel metafield della variante (backup)
