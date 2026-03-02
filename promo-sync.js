@@ -1,4 +1,3 @@
-
 /**
  * promo-sync.js — v2.2
  * Shopify Promo Automation — tuttobeautyshop.it
