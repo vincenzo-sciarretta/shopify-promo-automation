@@ -4,7 +4,7 @@ const fetch = require('node-fetch');
 const SHOP = process.env.SHOPIFY_STORE;
 const ACCESS_TOKEN = process.env.SHOPIFY_TOKEN;
 
-const API_VERSION = '2024-01';
+const API_VERSION = '2024-10';
 
 const GRAPHQL_ENDPOINT = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
 
