@@ -2,8 +2,8 @@ name: Sincronizzazione Promo Giornaliera
 
 on:
   schedule:
-    - cron: '1 0 * * *'  # Esegui ogni giorno alle 00:01
-  workflow_dispatch:  # Permette esecuzione manuale
+    - cron: '1 0 * * *'
+  workflow_dispatch:
 
 jobs:
   sync-promo:
@@ -23,6 +23,6 @@ jobs:
       
       - name: Esegui sincronizzazione promo
         env:
-          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
-          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+          SHOPIFY_SHOP_DOMAIN: ${{ secrets.SHOPIFY_SHOP_DOMAIN }}
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
         run: node promo-sync.js
