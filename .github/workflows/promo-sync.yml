@@ -18,6 +18,9 @@ jobs:
         with:
           node-version: '18'
       
+      - name: Installa dipendenze
+        run: npm install
+      
       - name: Esegui sincronizzazione promo
         env:
           SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
