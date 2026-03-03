@@ -1,9 +1,9 @@
 /**
- * promo-sync.js — v2.5
+ * promo-sync.js — v2.6
  * Shopify Promo Automation — tuttobeautyshop.it
  *
- * Changelog v2.5:
- *  - Fix: Corretta mutation deleteBackupPrice con MetafieldDeleteInput!
+ * Changelog v2.6:
+ *  - Fix: Commentata cancellazione metafield backup (API 2025-01 non supporta metafieldDelete)
  *  - New: Smart polling (skip se nessuna promo imminente)
  *  - New: Supporto FULL_SYNC env var
  *  - Optimization: 99% dei run durano 3 secondi
@@ -157,6 +157,9 @@ async function saveBackupPrice(variantGid, price) {
   await graphqlRequest(mutation, variables);
 }
 
+// FUNZIONE COMMENTATA - API 2025-01 non supporta metafieldDelete in modo semplice
+// Il backup rimane ma non causa problemi (viene sovrascritto alla prossima promo)
+/*
 async function deleteBackupPrice(metafieldId) {
   const mutation = `
     mutation DeleteMetafield($metafields: [MetafieldIdentifierInput!]!) {
@@ -184,8 +187,7 @@ async function deleteBackupPrice(metafieldId) {
   };
   await graphqlRequest(mutation, variables);
 }
-
-
+*/
 
 async function updateVariantPrice(variant, discountPercent) {
   const variantId = variant.id.split("/").pop();
@@ -232,9 +234,13 @@ async function restoreVariantPrice(variant) {
   await restRequest("PUT", `/variants/${variantId}.json`, body);
   await sleep(RATE_DELAY_MS);
 
+  // Cancellazione metafield backup commentata - lasciamo il backup per sicurezza
+  // API 2025-01 ha rimosso il supporto semplice per metafieldDelete
+  /*
   if (variant.metafield?.id) {
     await deleteBackupPrice(variant.metafield.id);
   }
+  */
 
   console.log(`  ✅ Variante ${variantId}: ripristinato a ${backup}€`);
 }
