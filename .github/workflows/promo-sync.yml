@@ -16,6 +16,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
       
+      - name: Debug - Verifica codice
+        run: |
+          echo "=== CONTENUTO RIGA 189-203 ==="
+          sed -n '189,203p' promo-sync.js
+          echo ""
+          echo "=== ULTIMO COMMIT ==="
+          git log --oneline -1
+          echo ""
+          echo "=== HASH FILE ==="
+          sha256sum promo-sync.js
+      
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
