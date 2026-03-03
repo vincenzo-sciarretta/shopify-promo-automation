@@ -159,9 +159,13 @@ async function saveBackupPrice(variantGid, price) {
 
 async function deleteBackupPrice(metafieldId) {
   const mutation = `
-    mutation DeleteMetafield($id: ID!) {
-      metafieldDelete(input: { id: $id }) {
-        deletedId
+    mutation DeleteMetafield($metafields: [MetafieldIdentifierInput!]!) {
+      metafieldsDelete(metafields: $metafields) {
+        deletedMetafields {
+          ownerId
+          namespace
+          key
+        }
         userErrors {
           field
           message
@@ -171,9 +175,16 @@ async function deleteBackupPrice(metafieldId) {
   `;
   
   console.log('Deleting metafield ID:', metafieldId);
-  const variables = { id: metafieldId };
+  const variables = { 
+    metafields: [{ 
+      ownerId: metafieldId.split('/Metafield/')[0].replace('gid://shopify/', 'gid://shopify/ProductVariant/'),
+      namespace: "promo",
+      key: "backup_price"
+    }]
+  };
   await graphqlRequest(mutation, variables);
 }
+
 
 
 async function updateVariantPrice(variant, discountPercent) {
