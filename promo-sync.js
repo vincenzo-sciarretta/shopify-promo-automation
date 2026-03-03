@@ -159,8 +159,8 @@ async function saveBackupPrice(variantGid, price) {
 
 async function deleteBackupPrice(metafieldId) {
   const mutation = `
-    mutation DeleteMetafield($input: MetafieldDeleteInput!) {
-      metafieldDelete(input: $input) {
+    mutation DeleteMetafield($id: ID!) {
+      metafieldDelete(input: { id: $id }) {
         deletedId
         userErrors {
           field
@@ -170,9 +170,11 @@ async function deleteBackupPrice(metafieldId) {
     }
   `;
   
-  const variables = { input: { id: metafieldId } };
+  console.log('Deleting metafield ID:', metafieldId);
+  const variables = { id: metafieldId };
   await graphqlRequest(mutation, variables);
 }
+
 
 async function updateVariantPrice(variant, discountPercent) {
   const variantId = variant.id.split("/").pop();
