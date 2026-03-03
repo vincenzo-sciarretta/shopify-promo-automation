@@ -1,9 +1,9 @@
 /**
- * promo-sync.js — v2.4
+ * promo-sync.js — v2.5
  * Shopify Promo Automation — tuttobeautyshop.it
  *
- * Changelog v2.4:
- *  - Fix: Corretta mutation deleteBackupPrice (GraphQL syntax error)
+ * Changelog v2.5:
+ *  - Fix: Corretta mutation deleteBackupPrice con MetafieldDeleteInput!
  *  - New: Smart polling (skip se nessuna promo imminente)
  *  - New: Supporto FULL_SYNC env var
  *  - Optimization: 99% dei run durano 3 secondi
@@ -180,15 +180,18 @@ async function saveBackupPrice(variantGid, price) {
 
 async function deleteBackupPrice(metafieldId) {
   const mutation = `
-    mutation DeleteMetafield($id: ID!) {
-      metafieldDelete(input: { id: $id }) {
+    mutation DeleteMetafield($input: MetafieldDeleteInput!) {
+      metafieldDelete(input: $input) {
         deletedId
-        userErrors { field message }
+        userErrors {
+          field
+          message
+        }
       }
     }
   `;
-
-  const variables = { id: metafieldId };
+  
+  const variables = { input: { id: metafieldId } };
   await graphqlRequest(mutation, variables);
 }
 
