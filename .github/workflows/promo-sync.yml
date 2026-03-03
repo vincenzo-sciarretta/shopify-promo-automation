@@ -1,17 +1,9 @@
 name: Sincronizzazione Promo Automatica
 
 on:
-  # Polling leggero ogni 15 minuti
   schedule:
-    - cron: '*/15 * * * *'   # Ogni 15 minuti
-    - cron: '1 0 * * *'      # Full sync a mezzanotte (backup)
-  
-  # Trigger manuale
-  workflow_dispatch:
-  
-  # Trigger via webhook esterno (per futuro Cloudflare)
-  repository_dispatch:
-    types: [promo_sync]
+    - cron: '1 0 * * *'      # Una volta al giorno a mezzanotte
+  workflow_dispatch:          # Trigger manuale
 
 jobs:
   sync-promo:
@@ -26,12 +18,12 @@ jobs:
         with:
           node-version: '18'
       
-     - name: Installa dipendenze
-  run: npm install
+      - name: Installa dipendenze
+        run: npm install
       
       - name: Esegui sincronizzazione promo
         env:
           SHOPIFY_SHOP_DOMAIN: ${{ secrets.SHOPIFY_SHOP_DOMAIN }}
           SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
-          FULL_SYNC: ${{ github.event.schedule == '1 0 * * *' && 'true' || 'false' }}
+          FULL_SYNC: 'true'
         run: node promo-sync.js
