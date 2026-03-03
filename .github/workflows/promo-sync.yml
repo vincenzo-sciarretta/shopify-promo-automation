@@ -16,16 +16,29 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
       
-      - name: Debug - Verifica codice
+      - name: 🔍 DEBUG CRITICO
         run: |
-          echo "=== CONTENUTO RIGA 189-203 ==="
-          sed -n '189,203p' promo-sync.js
+          echo "=== QUALE FILE STO ESEGUENDO? ==="
+          pwd
+          ls -la *.js
+          echo ""
+          echo "=== CERCA 'metafieldsList' NEL FILE ==="
+          grep -n "metafieldsList" promo-sync.js || echo "NON TROVATO ✅"
+          echo ""
+          echo "=== CERCA 'metafieldDelete' NEL FILE ==="
+          grep -n "metafieldDelete" promo-sync.js || echo "NON TROVATO ❌"
+          echo ""
+          echo "=== RIGHE 180-200 ==="
+          sed -n '180,200p' promo-sync.js
           echo ""
           echo "=== ULTIMO COMMIT ==="
-          git log --oneline -1
+          git log --oneline -5
           echo ""
-          echo "=== HASH FILE ==="
-          sha256sum promo-sync.js
+          echo "=== BRANCH ATTUALE ==="
+          git branch --show-current
+          echo ""
+          echo "=== TUTTI I FILE promo-sync.js ==="
+          find . -name "promo-sync.js" -not -path "*/node_modules/*"
       
       - name: Setup Node.js
         uses: actions/setup-node@v3
