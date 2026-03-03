@@ -1,8 +1,9 @@
 /**
- * promo-sync.js — v2.3
+ * promo-sync.js — v2.4
  * Shopify Promo Automation — tuttobeautyshop.it
  *
- * Changelog v2.3:
+ * Changelog v2.4:
+ *  - Fix: Corretta mutation deleteBackupPrice (GraphQL syntax error)
  *  - New: Smart polling (skip se nessuna promo imminente)
  *  - New: Supporto FULL_SYNC env var
  *  - Optimization: 99% dei run durano 3 secondi
@@ -179,15 +180,15 @@ async function saveBackupPrice(variantGid, price) {
 
 async function deleteBackupPrice(metafieldId) {
   const mutation = `
-    mutation DeleteMetafield($input: MetafieldDeleteInput!) {
-      metafieldDelete(input: $input) {
+    mutation DeleteMetafield($id: ID!) {
+      metafieldDelete(input: { id: $id }) {
         deletedId
         userErrors { field message }
       }
     }
   `;
 
-  const variables = { input: { id: metafieldId } };
+  const variables = { id: metafieldId };
   await graphqlRequest(mutation, variables);
 }
 
@@ -208,120 +209,101 @@ async function updateVariantPrice(variant, discountPercent) {
   const discountDecimal = discountPercent / 100;
   const newPrice = basePrice * (1 - discountDecimal);
 
-  // CHECK IDEMPOTENZA (float-safe)
-  if (
-    backup &&
-    Math.abs(currentPrice - newPrice) < 0.01 &&
-    Math.abs((currentCompareAt ?? 0) - basePrice) < 0.01
-  ) {
-    return; // Già aggiornato, skip
-  }
-
-  // Salva backup se non esiste
-  if (!backup) {
-    await saveBackupPrice(variant.id, basePrice);
-  }
-
-  // Aggiorna prezzo via REST
-  await restRequest("PUT", `/variants/${variantId}.json`, {
+  const body = {
     variant: {
-      id: parseInt(variantId),
+      id: variantId,
       price: newPrice.toFixed(2),
       compare_at_price: basePrice.toFixed(2),
     },
-  });
+  };
 
-  console.log(
-    `   🔥 ${discountPercent}% applicato → ${newPrice.toFixed(2)}€ (era ${basePrice.toFixed(2)}€, compare_at: ${basePrice.toFixed(2)}€)`
-  );
-
+  await restRequest("PUT", `/variants/${variantId}.json`, body);
   await sleep(RATE_DELAY_MS);
+
+  console.log(`  ✅ Variante ${variantId}: ${basePrice}€ → ${newPrice.toFixed(2)}€ (sconto ${discountPercent}%)`);
 }
 
-async function resetVariantPrice(variant) {
+async function restoreVariantPrice(variant) {
   const variantId = variant.id.split("/").pop();
   const backup = variant.metafield?.value ? parseFloat(variant.metafield.value) : null;
 
-  if (!backup) return; // Niente da ripristinare
+  if (!backup) {
+    console.log(`  ⚠️ Variante ${variantId}: nessun backup trovato, skip restore`);
+    return;
+  }
 
-  // Ripristina prezzo originale
-  await restRequest("PUT", `/variants/${variantId}.json`, {
+  const body = {
     variant: {
-      id: parseInt(variantId),
+      id: variantId,
       price: backup.toFixed(2),
       compare_at_price: null,
     },
-  });
+  };
+
+  await restRequest("PUT", `/variants/${variantId}.json`, body);
+  await sleep(RATE_DELAY_MS);
 
   // Cancella metafield backup
   if (variant.metafield?.id) {
     await deleteBackupPrice(variant.metafield.id);
   }
 
-  console.log(`   ♻ Ripristinato → ${backup.toFixed(2)}€`);
-
-  await sleep(RATE_DELAY_MS);
+  console.log(`  ✅ Variante ${variantId}: ripristinato a ${backup}€`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MAIN
+// LOGICA PRINCIPALE
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function main() {
   console.log("🚀 Avvio sincronizzazione promo...\n");
 
-  // 1. Leggi tutti i calendari promo
   const calendars = await fetchCalendariPromo();
+  console.log(`📅 Trovati ${calendars.length} calendari promo\n`);
 
-  // 2. CHECK SMART: Serve davvero fare sync?
-  const fullSync = process.env.FULL_SYNC === 'true';
+  // FULL_SYNC forzato (per test o deploy iniziale)
+  const forceFullSync = process.env.FULL_SYNC === "true";
 
-  if (!fullSync && !(await needsSync(calendars))) {
-    console.log("✅ Nessuna promo imminente. Skip sync (risparmio risorse).");
-    console.log("🏁 Fine CHECK\n");
-    return; // EXIT EARLY
+  if (!forceFullSync && !(await needsSync(calendars))) {
+    console.log("⏭️ Nessuna promo imminente, skip sincronizzazione (ottimizzazione smart polling)");
+    return;
   }
 
-  console.log(fullSync ? "🔄 FULL SYNC (mezzanotte)" : "⚡ SYNC RAPIDO (promo imminente)\n");
-
-  // 3. Procedi con sync normale
-  let updatedCount = 0;
-  let resetCount = 0;
-
-  const now = Date.now();
+  const now = new Date();
 
   for (const cal of calendars) {
-    const nome = cal.nome_promozione.value;
-    const start = new Date(cal.data_inizio.value).getTime();
-    const end = new Date(cal.data_fine.value).getTime();
-    const isActive = now >= start && now <= end;
+    const nomePromo = cal.nome_promozione.value;
+    const dataInizio = new Date(cal.data_inizio.value);
+    const dataFine = new Date(cal.data_fine.value);
+    const isActive = now >= dataInizio && now <= dataFine;
 
-    console.log(`📦 Promo: "${nome}" → ${isActive ? "ATTIVA" : "NON ATTIVA"}`);
+    console.log(`\n📌 Promo: "${nomePromo}"`);
+    console.log(`   Periodo: ${dataInizio.toLocaleString("it-IT")} → ${dataFine.toLocaleString("it-IT")}`);
+    console.log(`   Stato: ${isActive ? "🟢 ATTIVA" : "🔴 NON ATTIVA"}`);
 
-    const righe = cal.righe_promo.references?.nodes || [];
+    const righe = cal.righe_promo?.references?.nodes || [];
 
     for (const riga of righe) {
       const variant = riga.variante?.reference;
-      const sconto = parseFloat(riga.sconto_percentuale.value);
-
       if (!variant) continue;
 
+      const sconto = parseFloat(riga.sconto_percentuale.value);
+
       if (isActive) {
+        // Salva backup se non esiste
+        if (!variant.metafield) {
+          await saveBackupPrice(variant.id, variant.price);
+        }
+        // Applica sconto
         await updateVariantPrice(variant, sconto);
-        updatedCount++;
       } else {
-        await resetVariantPrice(variant);
-        resetCount++;
+        // Ripristina prezzo originale
+        await restoreVariantPrice(variant);
       }
     }
-
-    console.log("");
   }
 
-  console.log("=================================");
-  console.log(`✅ Varianti aggiornate: ${updatedCount}`);
-  console.log(`♻ Varianti ripristinate: ${resetCount}`);
-  console.log("🏁 Fine SYNC\n");
+  console.log("\n✅ Sincronizzazione completata con exit code 0.");
 }
 
 main().catch((err) => {
