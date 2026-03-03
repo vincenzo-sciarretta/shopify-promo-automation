@@ -13,17 +13,13 @@ const fetch = require("node-fetch");
 const SHOP_DOMAIN   = (process.env.SHOPIFY_SHOP_DOMAIN || "").trim();
 const ACCESS_TOKEN  = (process.env.SHOPIFY_ACCESS_TOKEN || "").trim();
 const API_VERSION   = "2025-01";
-const RATE_DELAY_MS = 400; // ms tra le chiamate REST (evita 429)
+const RATE_DELAY_MS = 400;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// VALIDAZIONE VARIABILI D'AMBIENTE
-// ─────────────────────────────────────────────────────────────────────────────
 if (!SHOP_DOMAIN || !ACCESS_TOKEN) {
   console.error("❌ SHOPIFY_SHOP_DOMAIN o SHOPIFY_ACCESS_TOKEN non configurati");
   process.exit(1);
 }
 
-// Caratteri illegali negli header HTTP
 if (/[\r\n\t]/.test(ACCESS_TOKEN)) {
   console.error("❌ ACCESS_TOKEN contiene caratteri non validi (newline/tab). Controlla il secret GitHub.");
   process.exit(1);
@@ -31,19 +27,14 @@ if (/[\r\n\t]/.test(ACCESS_TOKEN)) {
 
 console.log(`✅ Config: domain=${SHOP_DOMAIN}, token=${ACCESS_TOKEN.slice(0, 8)}...`);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SMART POLLING: Skip se nessuna promo imminente
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function needsSync(calendars) {
   const now = Date.now();
-  const window = 20 * 60 * 1000; // 20 minuti (margine sicurezza)
+  const window = 20 * 60 * 1000;
   
   for (const cal of calendars) {
     const start = new Date(cal.data_inizio.value).getTime();
     const end = new Date(cal.data_fine.value).getTime();
     
-    // Promo inizia o finisce nei prossimi/ultimi 20 minuti?
     if (Math.abs(start - now) < window || Math.abs(end - now) < window) {
       console.log(`⚡ Promo imminente rilevata: ${cal.nome_promozione.value}`);
       return true;
@@ -52,10 +43,6 @@ async function needsSync(calendars) {
   
   return false;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UTILITY
-// ─────────────────────────────────────────────────────────────────────────────
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,10 +91,6 @@ async function restRequest(method, path, body = null) {
   return res.json();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LETTURA METAOBJECT
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function fetchCalendariPromo() {
   const query = `
     query GetCalendariPromo {
@@ -148,10 +131,6 @@ async function fetchCalendariPromo() {
   const data = await graphqlRequest(query);
   return data.metaobjects.nodes;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// BACKUP PREZZO ORIGINALE
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function saveBackupPrice(variantGid, price) {
   const mutation = `
@@ -195,20 +174,14 @@ async function deleteBackupPrice(metafieldId) {
   await graphqlRequest(mutation, variables);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// AGGIORNAMENTO PREZZI (REST API)
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function updateVariantPrice(variant, discountPercent) {
   const variantId = variant.id.split("/").pop();
   const currentPrice = parseFloat(variant.price);
   const currentCompareAt = variant.compareAtPrice ? parseFloat(variant.compareAtPrice) : null;
   const backup = variant.metafield?.value ? parseFloat(variant.metafield.value) : null;
 
-  // Usa backup come fonte di verità, altrimenti prezzo corrente
   const basePrice = backup ?? currentPrice;
 
-  // Calcola nuovo prezzo scontato
   const discountDecimal = discountPercent / 100;
   const newPrice = basePrice * (1 - discountDecimal);
 
@@ -246,7 +219,6 @@ async function restoreVariantPrice(variant) {
   await restRequest("PUT", `/variants/${variantId}.json`, body);
   await sleep(RATE_DELAY_MS);
 
-  // Cancella metafield backup
   if (variant.metafield?.id) {
     await deleteBackupPrice(variant.metafield.id);
   }
@@ -254,17 +226,12 @@ async function restoreVariantPrice(variant) {
   console.log(`  ✅ Variante ${variantId}: ripristinato a ${backup}€`);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// LOGICA PRINCIPALE
-// ─────────────────────────────────────────────────────────────────────────────
-
 async function main() {
   console.log("🚀 Avvio sincronizzazione promo...\n");
 
   const calendars = await fetchCalendariPromo();
   console.log(`📅 Trovati ${calendars.length} calendari promo\n`);
 
-  // FULL_SYNC forzato (per test o deploy iniziale)
   const forceFullSync = process.env.FULL_SYNC === "true";
 
   if (!forceFullSync && !(await needsSync(calendars))) {
@@ -293,14 +260,11 @@ async function main() {
       const sconto = parseFloat(riga.sconto_percentuale.value);
 
       if (isActive) {
-        // Salva backup se non esiste
         if (!variant.metafield) {
           await saveBackupPrice(variant.id, variant.price);
         }
-        // Applica sconto
         await updateVariantPrice(variant, sconto);
       } else {
-        // Ripristina prezzo originale
         await restoreVariantPrice(variant);
       }
     }
