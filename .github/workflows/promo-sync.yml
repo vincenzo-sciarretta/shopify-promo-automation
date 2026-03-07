@@ -2,7 +2,7 @@ name: Sincronizzazione Promo Automatica
 
 on:
   schedule:
-    - cron: '1 0 * * *'
+       - cron: '*/4 * * * *'
   workflow_dispatch:
 
 permissions:
