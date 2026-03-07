@@ -1,6 +1,6 @@
 const https = require('https');
 
-const shop = process.env.SHOPIFY_SHOP_DOMAIN;
+const shop = (process.env.SHOPIFY_SHOP_DOMAIN || '').trim();
 const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
 
 // ═══════════════════════════════════════════════════════════
