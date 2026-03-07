@@ -1,298 +1,288 @@
-/**
- * promo-sync.js — v2.6
- * Shopify Promo Automation — tuttobeautyshop.it
- *
- * Changelog v2.6:
- *  - Fix: Commentata cancellazione metafield backup (API 2025-01 non supporta metafieldDelete)
- *  - New: Smart polling (skip se nessuna promo imminente)
- *  - New: Supporto FULL_SYNC env var
- *  - Optimization: 99% dei run durano 3 secondi
- */
-const fetch = require("node-fetch");
+require('dotenv').config();
+const https = require('https');
 
-const SHOP_DOMAIN   = (process.env.SHOPIFY_SHOP_DOMAIN || "").trim();
-const ACCESS_TOKEN  = (process.env.SHOPIFY_ACCESS_TOKEN || "").trim();
-const API_VERSION   = "2025-01";
-const RATE_DELAY_MS = 400;
+const shop = process.env.SHOPIFY_SHOP;
+const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
 
-if (!SHOP_DOMAIN || !ACCESS_TOKEN) {
-  console.error("❌ SHOPIFY_SHOP_DOMAIN o SHOPIFY_ACCESS_TOKEN non configurati");
-  process.exit(1);
-}
-
-if (/[\r\n\t]/.test(ACCESS_TOKEN)) {
-  console.error("❌ ACCESS_TOKEN contiene caratteri non validi (newline/tab). Controlla il secret GitHub.");
-  process.exit(1);
-}
-
-console.log(`✅ Config: domain=${SHOP_DOMAIN}, token=${ACCESS_TOKEN.slice(0, 8)}...`);
-
-async function needsSync(calendars) {
-  const now = Date.now();
-  const window = 20 * 60 * 1000;
-  
-  for (const cal of calendars) {
-    const start = new Date(cal.data_inizio.value).getTime();
-    const end = new Date(cal.data_fine.value).getTime();
-    
-    if (Math.abs(start - now) < window || Math.abs(end - now) < window) {
-      console.log(`⚡ Promo imminente rilevata: ${cal.nome_promozione.value}`);
-      return true;
-    }
-  }
-  
-  return false;
-}
+// ═══════════════════════════════════════════════════════════
+// UTILITY FUNCTIONS
+// ═══════════════════════════════════════════════════════════
 
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function graphqlRequest(query, variables = {}) {
-  const url = `https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/graphql.json`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": ACCESS_TOKEN,
-    },
-    body: JSON.stringify({ query, variables }),
+function graphqlRequest(query, variables = {}) {
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify({ query, variables });
+    
+    const options = {
+      hostname: shop,
+      path: '/admin/api/2024-01/graphql.json',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': accessToken,
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(body);
+          if (response.errors) {
+            reject(new Error(JSON.stringify(response.errors)));
+          } else {
+            resolve(response.data);
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
   });
-
-  if (!res.ok) {
-    throw new Error(`GraphQL HTTP error: ${res.status} ${res.statusText}`);
-  }
-
-  const json = await res.json();
-  if (json.errors) {
-    throw new Error(`GraphQL errors: ${JSON.stringify(json.errors)}`);
-  }
-
-  return json.data;
 }
 
-async function restRequest(method, path, body = null) {
-  const url = `https://${SHOP_DOMAIN}/admin/api/${API_VERSION}${path}`;
-  const options = {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": ACCESS_TOKEN,
-    },
-  };
-  if (body) options.body = JSON.stringify(body);
+function restRequest(method, path, body = null) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: shop,
+      path: `/admin/api/2024-01/${path}`,
+      method: method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': accessToken
+      }
+    };
 
-  const res = await fetch(url, options);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`REST ${method} ${path} failed: ${res.status} ${text}`);
-  }
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          resolve(response);
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
 
-  return res.json();
+    req.on('error', reject);
+    if (body) req.write(JSON.stringify(body));
+    req.end();
+  });
 }
 
-async function fetchCalendariPromo() {
-  const query = `
-    query GetCalendariPromo {
-      metaobjects(type: "calendario_promo", first: 50) {
-        nodes {
+// ═══════════════════════════════════════════════════════════
+// MAIN FUNCTIONS
+// ═══════════════════════════════════════════════════════════
+
+async function getAllPromos() {
+  const query = `{
+    metaobjects(type: "calendario_promo", first: 50) {
+      edges {
+        node {
           id
-          nome_promozione: field(key: "nome_promozione") { value }
-          data_inizio: field(key: "data_inizio") { value }
-          data_fine: field(key: "data_fine") { value }
-          righe_promo: field(key: "righe_promo") {
-            references(first: 100) {
-              nodes {
-                ... on Metaobject {
-                  id
-                  variante: field(key: "variante") {
-                    reference {
-                      ... on ProductVariant {
-                        id
-                        price
-                        compareAtPrice
-                        metafield(namespace: "promo", key: "backup_price") {
-                          id
-                          value
-                        }
-                      }
-                    }
-                  }
-                  sconto_percentuale: field(key: "sconto_percentuale") { value }
-                }
-              }
-            }
+          handle
+          fields {
+            key
+            value
           }
         }
       }
     }
-  `;
+  }`;
 
   const data = await graphqlRequest(query);
-  return data.metaobjects.nodes;
-}
-
-async function saveBackupPrice(variantGid, price) {
-  const mutation = `
-    mutation CreateBackupMetafield($metafields: [MetafieldsSetInput!]!) {
-      metafieldsSet(metafields: $metafields) {
-        metafields { id namespace key value }
-        userErrors { field message }
-      }
-    }
-  `;
-
-  const variables = {
-    metafields: [
-      {
-        ownerId: variantGid,
-        namespace: "promo",
-        key: "backup_price",
-        type: "number_decimal",
-        value: price.toString(),
-      },
-    ],
-  };
-
-  await graphqlRequest(mutation, variables);
-}
-
-// FUNZIONE COMMENTATA - API 2025-01 non supporta metafieldDelete in modo semplice
-// Il backup rimane ma non causa problemi (viene sovrascritto alla prossima promo)
-/*
-async function deleteBackupPrice(metafieldId) {
-  const mutation = `
-    mutation DeleteMetafield($metafields: [MetafieldIdentifierInput!]!) {
-      metafieldsDelete(metafields: $metafields) {
-        deletedMetafields {
-          ownerId
-          namespace
-          key
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-  `;
-  
-  console.log('Deleting metafield ID:', metafieldId);
-  const variables = { 
-    metafields: [{ 
-      ownerId: metafieldId.split('/Metafield/')[0].replace('gid://shopify/', 'gid://shopify/ProductVariant/'),
-      namespace: "promo",
-      key: "backup_price"
-    }]
-  };
-  await graphqlRequest(mutation, variables);
-}
-*/
-
-async function updateVariantPrice(variant, discountPercent) {
-  const variantId = variant.id.split("/").pop();
-  const currentPrice = parseFloat(variant.price);
-  const currentCompareAt = variant.compareAtPrice ? parseFloat(variant.compareAtPrice) : null;
-  const backup = variant.metafield?.value ? parseFloat(variant.metafield.value) : null;
-
-  const basePrice = backup ?? currentPrice;
-
-  const discountDecimal = discountPercent / 100;
-  const newPrice = basePrice * (1 - discountDecimal);
-
-  const body = {
-    variant: {
-      id: variantId,
-      price: newPrice.toFixed(2),
-      compare_at_price: basePrice.toFixed(2),
-    },
-  };
-
-  await restRequest("PUT", `/variants/${variantId}.json`, body);
-  await sleep(RATE_DELAY_MS);
-
-  console.log(`  ✅ Variante ${variantId}: ${basePrice}€ → ${newPrice.toFixed(2)}€ (sconto ${discountPercent}%)`);
-}
-
-async function restoreVariantPrice(variant) {
-  const variantId = variant.id.split("/").pop();
-  const backup = variant.metafield?.value ? parseFloat(variant.metafield.value) : null;
-
-  if (!backup) {
-    console.log(`  ⚠️ Variante ${variantId}: nessun backup trovato, skip restore`);
-    return;
-  }
-
-  const body = {
-    variant: {
-      id: variantId,
-      price: backup.toFixed(2),
-      compare_at_price: null,
-    },
-  };
-
-  await restRequest("PUT", `/variants/${variantId}.json`, body);
-  await sleep(RATE_DELAY_MS);
-
-  // Cancellazione metafield backup commentata - lasciamo il backup per sicurezza
-  // API 2025-01 ha rimosso il supporto semplice per metafieldDelete
-  /*
-  if (variant.metafield?.id) {
-    await deleteBackupPrice(variant.metafield.id);
-  }
-  */
-
-  console.log(`  ✅ Variante ${variantId}: ripristinato a ${backup}€`);
-}
-
-async function main() {
-  console.log("🚀 Avvio sincronizzazione promo...\n");
-
-  const calendars = await fetchCalendariPromo();
-  console.log(`📅 Trovati ${calendars.length} calendari promo\n`);
-
-  const forceFullSync = process.env.FULL_SYNC === "true";
-
-  if (!forceFullSync && !(await needsSync(calendars))) {
-    console.log("⏭️ Nessuna promo imminente, skip sincronizzazione (ottimizzazione smart polling)");
-    return;
-  }
-
   const now = new Date();
+  const activePromos = [];
+  const expiredPromos = [];
 
-  for (const cal of calendars) {
-    const nomePromo = cal.nome_promozione.value;
-    const dataInizio = new Date(cal.data_inizio.value);
-    const dataFine = new Date(cal.data_fine.value);
-    const isActive = now >= dataInizio && now <= dataFine;
+  for (const edge of data.metaobjects.edges) {
+    const node = edge.node;
+    const fields = {};
+    
+    node.fields.forEach(f => {
+      fields[f.key] = f.value;
+    });
 
-    console.log(`\n📌 Promo: "${nomePromo}"`);
-    console.log(`   Periodo: ${dataInizio.toLocaleString("it-IT")} → ${dataFine.toLocaleString("it-IT")}`);
-    console.log(`   Stato: ${isActive ? "🟢 ATTIVA" : "🔴 NON ATTIVA"}`);
-
-    const righe = cal.righe_promo?.references?.nodes || [];
-
-    for (const riga of righe) {
-      const variant = riga.variante?.reference;
-      if (!variant) continue;
-
-      const sconto = parseFloat(riga.sconto_percentuale.value);
-
-      if (isActive) {
-        if (!variant.metafield) {
-          await saveBackupPrice(variant.id, variant.price);
-        }
-        await updateVariantPrice(variant, sconto);
-      } else {
-        await restoreVariantPrice(variant);
+    const dataInizio = new Date(fields.data_inizio);
+    const dataFine = new Date(fields.data_fine);
+    
+    let prodottiScontati = [];
+    if (fields.prodotti_scontati) {
+      try {
+        prodottiScontati = JSON.parse(fields.prodotti_scontati);
+      } catch (e) {
+        console.log(`⚠️ Errore parsing JSON per ${fields.nome_promozione}:`, e.message);
       }
+    }
+
+    const promo = {
+      id: node.id,
+      handle: node.handle,
+      nome: fields.nome_promozione || node.handle,
+      dataInizio,
+      dataFine,
+      tagEsclusione: fields.tag_esclusione || 'promo-carosello',
+      prodottiScontati
+    };
+
+    // LOGICA SEMPLIFICATA: Solo date, no campo "attiva"
+    if (now >= dataInizio && now <= dataFine) {
+      activePromos.push(promo);
+    } else if (now > dataFine && prodottiScontati.length > 0) {
+      expiredPromos.push(promo);
     }
   }
 
-  console.log("\n✅ Sincronizzazione completata con exit code 0.");
+  return { activePromos, expiredPromos };
 }
 
-main().catch((err) => {
-  console.error("❌ Errore:", err.message);
+async function applyDiscount(variantId, originalPrice, discountPercent) {
+  const discountedPrice = (originalPrice * (1 - discountPercent / 100)).toFixed(2);
+  const numericId = variantId.split('/').pop();
+  
+  const response = await restRequest('PUT', `variants/${numericId}.json`, {
+    variant: {
+      id: parseInt(numericId),
+      price: discountedPrice,
+      compare_at_price: originalPrice.toFixed(2)
+    }
+  });
+
+  if (response.errors) {
+    throw new Error(JSON.stringify(response.errors));
+  }
+
+  return discountedPrice;
+}
+
+async function restorePrice(variantId, originalPrice) {
+  const numericId = variantId.split('/').pop();
+  
+  const response = await restRequest('PUT', `variants/${numericId}.json`, {
+    variant: {
+      id: parseInt(numericId),
+      price: originalPrice.toFixed(2),
+      compare_at_price: null
+    }
+  });
+
+  if (response.errors) {
+    throw new Error(JSON.stringify(response.errors));
+  }
+}
+
+async function syncPromos() {
+  console.log('🚀 Avvio sincronizzazione promo...\n');
+  
+  const { activePromos, expiredPromos } = await getAllPromos();
+  
+  console.log(`✅ Trovate ${activePromos.length} promo attive`);
+  console.log(`🔄 Trovate ${expiredPromos.length} promo scadute da ripristinare\n`);
+
+  // APPLICA SCONTI per promo attive
+  for (const promo of activePromos) {
+    console.log(`📦 Promo ATTIVA: "${promo.nome}"`);
+    console.log(`   📅 Dal ${promo.dataInizio.toLocaleString('it-IT')} al ${promo.dataFine.toLocaleString('it-IT')}`);
+    console.log(`   🛍️ Prodotti: ${promo.prodottiScontati.length}`);
+    
+    for (const prodotto of promo.prodottiScontati) {
+      try {
+        const query = `{
+          productVariant(id: "${prodotto.variant_id}") {
+            id
+            price
+            product {
+              title
+            }
+          }
+        }`;
+        
+        const data = await graphqlRequest(query);
+        const currentPrice = parseFloat(data.productVariant.price);
+        const productTitle = data.productVariant.product.title;
+        
+        // Salva prezzo originale se non già scontato
+        if (!prodotto.prezzo_originale) {
+          prodotto.prezzo_originale = currentPrice;
+        }
+        
+        const discountedPrice = await applyDiscount(
+          prodotto.variant_id,
+          prodotto.prezzo_originale,
+          prodotto.sconto_percentuale
+        );
+        
+        console.log(`   ✅ ${productTitle} ${prodotto.formato}: €${prodotto.prezzo_originale.toFixed(2)} → €${discountedPrice} (-${prodotto.sconto_percentuale}%)`);
+        
+        await sleep(500);
+        
+      } catch (e) {
+        console.log(`   ❌ Errore su ${prodotto.product_title}:`, e.message);
+      }
+    }
+    
+    console.log('');
+  }
+
+  // RIPRISTINA PREZZI per promo scadute
+  for (const promo of expiredPromos) {
+    console.log(`🔄 Promo SCADUTA: "${promo.nome}"`);
+    console.log(`   📅 Scaduta il ${promo.dataFine.toLocaleString('it-IT')}`);
+    console.log(`   🔙 Ripristino prezzi originali...`);
+    
+    for (const prodotto of promo.prodottiScontati) {
+      try {
+        const query = `{
+          productVariant(id: "${prodotto.variant_id}") {
+            id
+            product {
+              title
+            }
+          }
+        }`;
+        
+        const data = await graphqlRequest(query);
+        const productTitle = data.productVariant.product.title;
+        
+        // Usa prezzo_originale dal JSON
+        const originalPrice = prodotto.prezzo_originale || prodotto.prezzo_base || 0;
+        
+        if (originalPrice > 0) {
+          await restorePrice(prodotto.variant_id, originalPrice);
+          console.log(`   ✅ ${productTitle} ${prodotto.formato}: Ripristinato a €${originalPrice.toFixed(2)}`);
+        } else {
+          console.log(`   ⚠️ ${productTitle} ${prodotto.formato}: Prezzo originale non trovato, skip`);
+        }
+        
+        await sleep(500);
+        
+      } catch (e) {
+        console.log(`   ❌ Errore su ${prodotto.product_title}:`, e.message);
+      }
+    }
+    
+    console.log('');
+  }
+
+  console.log('✅ Sincronizzazione completata!\n');
+}
+
+// ═══════════════════════════════════════════════════════════
+// RUN
+// ═══════════════════════════════════════════════════════════
+
+syncPromos().catch(err => {
+  console.error('❌ Errore fatale:', err);
   process.exit(1);
 });
