@@ -1,4 +1,3 @@
-require('dotenv').config();
 const https = require('https');
 
 const shop = process.env.SHOPIFY_SHOP;
