@@ -80,7 +80,25 @@ async function getPromos() {
   });
 }
 
-async function updateVariantPrice(variantId, newPrice, originalPrice) {
+async function getVariantInfo(variantId) {
+  const query = `
+    query getVariant($id: ID!) {
+      productVariant(id: $id) {
+        id
+        price
+        product {
+          id
+          title
+        }
+      }
+    }
+  `;
+
+  const data = await graphqlRequest(query, { id: variantId });
+  return data.productVariant;
+}
+
+async function updateVariantPrice(variantId, newPrice) {
   const mutation = `
     mutation productVariantUpdate($input: ProductVariantInput!) {
       productVariantUpdate(input: $input) {
@@ -96,20 +114,10 @@ async function updateVariantPrice(variantId, newPrice, originalPrice) {
     }
   `;
 
-  const numericId = variantId.replace('gid://shopify/ProductVariant/', '');
-
   const variables = {
     input: {
       id: variantId,
-      price: newPrice.toString(),
-      metafields: [
-        {
-          namespace: "custom",
-          key: "prezzo_originale",
-          value: originalPrice.toString(),
-          type: "number_decimal"
-        }
-      ]
+      price: newPrice.toFixed(2)
     }
   };
 
@@ -122,28 +130,8 @@ async function updateVariantPrice(variantId, newPrice, originalPrice) {
   return data.productVariantUpdate.productVariant;
 }
 
-async function getVariantPrice(variantId) {
-  const query = `
-    query getVariant($id: ID!) {
-      productVariant(id: $id) {
-        id
-        price
-        metafield(namespace: "custom", key: "prezzo_originale") {
-          value
-        }
-      }
-    }
-  `;
-
-  const data = await graphqlRequest(query, { id: variantId });
-  
-  return {
-    currentPrice: parseFloat(data.productVariant.price),
-    originalPrice: data.productVariant.metafield?.value 
-      ? parseFloat(data.productVariant.metafield.value)
-      : parseFloat(data.productVariant.price)
-  };
-}
+// Mappa per salvare i prezzi originali in memoria
+const prezziOriginali = new Map();
 
 async function syncPromos() {
   console.log('🚀 Avvio sincronizzazione promo...');
@@ -171,14 +159,22 @@ async function syncPromos() {
           const variantId = prodotto.variant_id;
           const scontoPercentuale = prodotto.sconto_percentuale;
 
-          const { currentPrice, originalPrice } = await getVariantPrice(variantId);
+          const variantInfo = await getVariantInfo(variantId);
+          const prezzoAttuale = parseFloat(variantInfo.price);
 
-          const prezzoScontato = originalPrice * (1 - scontoPercentuale / 100);
+          // Salva prezzo originale se non già salvato
+          if (!prezziOriginali.has(variantId)) {
+            prezziOriginali.set(variantId, prezzoAttuale);
+            console.log(`   💾 Salvato prezzo originale: €${prezzoAttuale}`);
+          }
+
+          const prezzoOriginale = prezziOriginali.get(variantId);
+          const prezzoScontato = prezzoOriginale * (1 - scontoPercentuale / 100);
           const prezzoScontatoArrotondato = Math.round(prezzoScontato * 100) / 100;
 
-          if (Math.abs(currentPrice - prezzoScontatoArrotondato) > 0.01) {
-            await updateVariantPrice(variantId, prezzoScontatoArrotondato, originalPrice);
-            console.log(`   ✅ ${variantId}: €${originalPrice} → €${prezzoScontatoArrotondato} (-${scontoPercentuale}%)`);
+          if (Math.abs(prezzoAttuale - prezzoScontatoArrotondato) > 0.01) {
+            await updateVariantPrice(variantId, prezzoScontatoArrotondato);
+            console.log(`   ✅ ${variantId}: €${prezzoOriginale} → €${prezzoScontatoArrotondato} (-${scontoPercentuale}%)`);
           } else {
             console.log(`   ⏭️  ${variantId}: Già scontato a €${prezzoScontatoArrotondato}`);
           }
@@ -199,13 +195,21 @@ async function syncPromos() {
       for (const prodotto of promo.prodotti) {
         try {
           const variantId = prodotto.variant_id;
-          const { currentPrice, originalPrice } = await getVariantPrice(variantId);
 
-          if (Math.abs(currentPrice - originalPrice) > 0.01) {
-            await updateVariantPrice(variantId, originalPrice, originalPrice);
-            console.log(`   ✅ ${variantId}: Ripristinato a €${originalPrice}`);
+          if (prezziOriginali.has(variantId)) {
+            const prezzoOriginale = prezziOriginali.get(variantId);
+            const variantInfo = await getVariantInfo(variantId);
+            const prezzoAttuale = parseFloat(variantInfo.price);
+
+            if (Math.abs(prezzoAttuale - prezzoOriginale) > 0.01) {
+              await updateVariantPrice(variantId, prezzoOriginale);
+              console.log(`   ✅ ${variantId}: Ripristinato a €${prezzoOriginale}`);
+              prezziOriginali.delete(variantId);
+            } else {
+              console.log(`   ⏭️  ${variantId}: Già al prezzo originale €${prezzoOriginale}`);
+            }
           } else {
-            console.log(`   ⏭️  ${variantId}: Già al prezzo originale €${originalPrice}`);
+            console.log(`   ⚠️  ${variantId}: Prezzo originale non trovato, salto`);
           }
 
           await new Promise(resolve => setTimeout(resolve, 500));
