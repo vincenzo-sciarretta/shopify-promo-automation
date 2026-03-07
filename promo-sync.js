@@ -4,6 +4,7 @@ require('dotenv').config();
 const shop = (process.env.SHOPIFY_SHOP_DOMAIN || '').trim();
 const accessToken = process.env.SHOPIFY_ACCESS_TOKEN;
 
+// GraphQL per leggere i metaobject
 function graphqlRequest(query, variables = {}) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify({ query, variables });
@@ -38,6 +39,44 @@ function graphqlRequest(query, variables = {}) {
 
     req.on('error', reject);
     req.write(data);
+    req.end();
+  });
+}
+
+// REST API per aggiornare varianti
+function restRequest(method, path, body = null) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: shop,
+      path: path,
+      method: method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Shopify-Access-Token': accessToken
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let responseBody = '';
+      res.on('data', (chunk) => responseBody += chunk);
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(responseBody);
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(json);
+          } else {
+            reject(new Error(`HTTP ${res.statusCode}: ${JSON.stringify(json)}`));
+          }
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+
+    req.on('error', reject);
+    if (body) {
+      req.write(JSON.stringify(body));
+    }
     req.end();
   });
 }
@@ -80,126 +119,55 @@ async function getPromos() {
   });
 }
 
-async function getVariantInfo(variantId) {
-  const query = `
-    query getVariant($id: ID!) {
-      productVariant(id: $id) {
-        id
-        price
-        metafield(namespace: "custom", key: "prezzo_originale") {
-          id
-          value
-        }
-        product {
-          id
-          title
-        }
-      }
-    }
-  `;
-
-  const data = await graphqlRequest(query, { id: variantId });
-  return data.productVariant;
+async function getVariantREST(variantId) {
+  const numericId = variantId.replace('gid://shopify/ProductVariant/', '');
+  const path = `/admin/api/2024-01/variants/${numericId}.json`;
+  const data = await restRequest('GET', path);
+  return data.variant;
 }
 
-async function updateVariantWithMetafield(variantId, newPrice, originalPrice) {
-  const mutation = `
-    mutation productVariantUpdate($input: ProductVariantInput!) {
-      productVariantUpdate(input: $input) {
-        productVariant {
-          id
-          price
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-  `;
-
-  const variables = {
-    input: {
-      id: variantId,
-      price: newPrice.toFixed(2),
-      metafields: [
-        {
-          namespace: "custom",
-          key: "prezzo_originale",
-          value: originalPrice.toFixed(2),
-          type: "number_decimal"
-        }
-      ]
-    }
-  };
-
-  const data = await graphqlRequest(mutation, variables);
-
-  if (data.productVariantUpdate.userErrors.length > 0) {
-    throw new Error(JSON.stringify(data.productVariantUpdate.userErrors));
-  }
-
-  return data.productVariantUpdate.productVariant;
-}
-
-async function deleteMetafield(metafieldId) {
-  const mutation = `
-    mutation metafieldDelete($input: MetafieldDeleteInput!) {
-      metafieldDelete(input: $input) {
-        deletedId
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-  `;
-
-  const variables = {
-    input: {
-      id: metafieldId
-    }
-  };
-
-  const data = await graphqlRequest(mutation, variables);
-
-  if (data.metafieldDelete.userErrors.length > 0) {
-    throw new Error(JSON.stringify(data.metafieldDelete.userErrors));
-  }
-
-  return data.metafieldDelete.deletedId;
-}
-
-async function updateVariantPrice(variantId, newPrice) {
-  const mutation = `
-    mutation productVariantUpdate($input: ProductVariantInput!) {
-      productVariantUpdate(input: $input) {
-        productVariant {
-          id
-          price
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }
-  `;
-
-  const variables = {
-    input: {
-      id: variantId,
+async function updateVariantREST(variantId, newPrice) {
+  const numericId = variantId.replace('gid://shopify/ProductVariant/', '');
+  const path = `/admin/api/2024-01/variants/${numericId}.json`;
+  
+  const body = {
+    variant: {
+      id: parseInt(numericId),
       price: newPrice.toFixed(2)
     }
   };
 
-  const data = await graphqlRequest(mutation, variables);
+  const data = await restRequest('PUT', path, body);
+  return data.variant;
+}
 
-  if (data.productVariantUpdate.userErrors.length > 0) {
-    throw new Error(JSON.stringify(data.productVariantUpdate.userErrors));
-  }
+async function getVariantMetafields(variantId) {
+  const numericId = variantId.replace('gid://shopify/ProductVariant/', '');
+  const path = `/admin/api/2024-01/variants/${numericId}/metafields.json`;
+  const data = await restRequest('GET', path);
+  return data.metafields || [];
+}
 
-  return data.productVariantUpdate.productVariant;
+async function createVariantMetafield(variantId, key, value) {
+  const numericId = variantId.replace('gid://shopify/ProductVariant/', '');
+  const path = `/admin/api/2024-01/variants/${numericId}/metafields.json`;
+  
+  const body = {
+    metafield: {
+      namespace: "custom",
+      key: key,
+      value: value.toString(),
+      type: "number_decimal"
+    }
+  };
+
+  const data = await restRequest('POST', path, body);
+  return data.metafield;
+}
+
+async function deleteMetafieldREST(metafieldId) {
+  const path = `/admin/api/2024-01/metafields/${metafieldId}.json`;
+  await restRequest('DELETE', path);
 }
 
 async function syncPromos() {
@@ -217,6 +185,7 @@ async function syncPromos() {
     console.log(`✅ Trovate ${promoAttive.length} promo attive`);
     console.log(`❌ Trovate ${promoScadute.length} promo scadute da ripristinare`);
 
+    // Applica sconti per promo attive
     for (const promo of promoAttive) {
       console.log(`\n📢 Promo ATTIVA: "${promo.nome}"`);
       console.log(`   Scade il: ${promo.dataFine.toLocaleString('it-IT')}`);
@@ -227,26 +196,31 @@ async function syncPromos() {
           const variantId = prodotto.variant_id;
           const scontoPercentuale = prodotto.sconto_percentuale;
 
-          const variantInfo = await getVariantInfo(variantId);
-          const prezzoAttuale = parseFloat(variantInfo.price);
+          const variant = await getVariantREST(variantId);
+          const prezzoAttuale = parseFloat(variant.price);
+
+          // Controlla se esiste già il metafield
+          const metafields = await getVariantMetafields(variantId);
+          const metafieldPrezzo = metafields.find(m => m.namespace === 'custom' && m.key === 'prezzo_originale');
 
           let prezzoOriginale;
-          if (variantInfo.metafield?.value) {
-            prezzoOriginale = parseFloat(variantInfo.metafield.value);
+          if (metafieldPrezzo) {
+            prezzoOriginale = parseFloat(metafieldPrezzo.value);
             console.log(`   💾 Prezzo originale già salvato: €${prezzoOriginale}`);
           } else {
             prezzoOriginale = prezzoAttuale;
             console.log(`   💾 Salvo prezzo originale: €${prezzoOriginale}`);
+            await createVariantMetafield(variantId, 'prezzo_originale', prezzoOriginale);
           }
 
           const prezzoScontato = prezzoOriginale * (1 - scontoPercentuale / 100);
           const prezzoScontatoArrotondato = Math.round(prezzoScontato * 100) / 100;
 
           if (Math.abs(prezzoAttuale - prezzoScontatoArrotondato) > 0.01) {
-            await updateVariantWithMetafield(variantId, prezzoScontatoArrotondato, prezzoOriginale);
-            console.log(`   ✅ ${variantInfo.product.title}: €${prezzoOriginale} → €${prezzoScontatoArrotondato} (-${scontoPercentuale}%)`);
+            await updateVariantREST(variantId, prezzoScontatoArrotondato);
+            console.log(`   ✅ ${variant.title}: €${prezzoOriginale} → €${prezzoScontatoArrotondato} (-${scontoPercentuale}%)`);
           } else {
-            console.log(`   ⏭️  ${variantInfo.product.title}: Già scontato a €${prezzoScontatoArrotondato}`);
+            console.log(`   ⏭️  ${variant.title}: Già scontato a €${prezzoScontatoArrotondato}`);
           }
 
           await new Promise(resolve => setTimeout(resolve, 500));
@@ -256,6 +230,7 @@ async function syncPromos() {
       }
     }
 
+    // Ripristina prezzi per promo scadute
     for (const promo of promoScadute) {
       console.log(`\n⏰ Promo SCADUTA: "${promo.nome}"`);
       console.log(`   Scaduta il: ${promo.dataFine.toLocaleString('it-IT')}`);
@@ -264,23 +239,24 @@ async function syncPromos() {
       for (const prodotto of promo.prodotti) {
         try {
           const variantId = prodotto.variant_id;
-          const variantInfo = await getVariantInfo(variantId);
+          const variant = await getVariantREST(variantId);
+          const prezzoAttuale = parseFloat(variant.price);
 
-          if (variantInfo.metafield?.value) {
-            const prezzoOriginale = parseFloat(variantInfo.metafield.value);
-            const prezzoAttuale = parseFloat(variantInfo.price);
+          const metafields = await getVariantMetafields(variantId);
+          const metafieldPrezzo = metafields.find(m => m.namespace === 'custom' && m.key === 'prezzo_originale');
+
+          if (metafieldPrezzo) {
+            const prezzoOriginale = parseFloat(metafieldPrezzo.value);
 
             if (Math.abs(prezzoAttuale - prezzoOriginale) > 0.01) {
-              await updateVariantPrice(variantId, prezzoOriginale);
-              console.log(`   ✅ ${variantInfo.product.title}: Ripristinato a €${prezzoOriginale}`);
-              
-              if (variantInfo.metafield.id) {
-                await deleteMetafield(variantInfo.metafield.id);
-                console.log(`   🗑️  Metafield rimosso`);
-              }
+              await updateVariantREST(variantId, prezzoOriginale);
+              console.log(`   ✅ ${variant.title}: Ripristinato a €${prezzoOriginale}`);
             } else {
-              console.log(`   ⏭️  ${variantInfo.product.title}: Già al prezzo originale €${prezzoOriginale}`);
+              console.log(`   ⏭️  ${variant.title}: Già al prezzo originale €${prezzoOriginale}`);
             }
+
+            await deleteMetafieldREST(metafieldPrezzo.id);
+            console.log(`   🗑️  Metafield rimosso`);
           } else {
             console.log(`   ⚠️  ${variantId}: Prezzo originale non trovato, salto`);
           }
