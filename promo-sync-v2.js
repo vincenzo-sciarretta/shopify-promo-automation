@@ -1,8 +1,19 @@
 require('dotenv').config();
 const https = require('https');
+const { getToken } = require('./token-manager');
 
-const SHOP = process.env.SHOPIFY_SHOP_DOMAIN;
-const TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+let SHOP = process.env.SHOPIFY_SHOP_DOMAIN;
+let TOKEN = null;
+
+// ========================================
+// INIZIALIZZAZIONE TOKEN
+// ========================================
+
+async function initToken() {
+  console.log('🔑 Ottengo token di accesso...');
+  TOKEN = await getToken();
+  console.log('✅ Token ottenuto!\n');
+}
 
 // ========================================
 // FUNZIONI HELPER API
@@ -77,7 +88,6 @@ function restRequest(method, path, body = null) {
 async function addTagToProduct(productId, tag) {
   const numericId = productId.split('/').pop();
   
-  // Leggi prodotto attuale
   const product = await restRequest('GET', `/admin/api/2024-01/products/${numericId}.json`);
   
   if (!product.product) {
@@ -85,7 +95,6 @@ async function addTagToProduct(productId, tag) {
     return;
   }
   
-  // Aggiungi tag se non esiste già
   let tags = product.product.tags ? product.product.tags.split(', ') : [];
   
   if (!tags.includes(tag)) {
@@ -105,7 +114,6 @@ async function addTagToProduct(productId, tag) {
 async function removeTagFromProduct(productId, tag) {
   const numericId = productId.split('/').pop();
   
-  // Leggi prodotto attuale
   const product = await restRequest('GET', `/admin/api/2024-01/products/${numericId}.json`);
   
   if (!product.product) {
@@ -113,7 +121,6 @@ async function removeTagFromProduct(productId, tag) {
     return;
   }
   
-  // Rimuovi tag se esiste
   let tags = product.product.tags ? product.product.tags.split(', ') : [];
   
   if (tags.includes(tag)) {
@@ -137,7 +144,6 @@ async function removeTagFromProduct(productId, tag) {
 async function applyDiscount(variantId, discountPercent, tag) {
   const numericId = variantId.split('/').pop();
   
-  // Leggi variante attuale
   const variant = await restRequest('GET', `/admin/api/2024-01/variants/${numericId}.json`);
   
   if (!variant.variant) {
@@ -148,19 +154,14 @@ async function applyDiscount(variantId, discountPercent, tag) {
   const currentPrice = parseFloat(variant.variant.price);
   const currentCompareAtPrice = variant.variant.compare_at_price ? parseFloat(variant.variant.compare_at_price) : null;
   
-  // ✅ CONTROLLO: Se compare_at_price è già impostato, lo sconto è già applicato
   if (currentCompareAtPrice && currentCompareAtPrice > currentPrice) {
     console.log(`   ℹ️ Variante ${numericId}: Sconto già applicato (€${currentCompareAtPrice} → €${currentPrice}), skip`);
-    
-    // Aggiungi comunque il tag se manca
     await addTagToProduct(variant.variant.product_id.toString(), tag);
     return;
   }
   
-  // Calcola prezzo scontato
   const discountedPrice = (currentPrice * (1 - discountPercent / 100)).toFixed(2);
   
-  // Salva prezzo originale in metafield (backup)
   await restRequest('POST', `/admin/api/2024-01/variants/${numericId}/metafields.json`, {
     metafield: {
       namespace: 'custom',
@@ -170,7 +171,6 @@ async function applyDiscount(variantId, discountPercent, tag) {
     }
   });
   
-  // Imposta compare_at_price (prezzo barrato) e price (prezzo scontato)
   await restRequest('PUT', `/admin/api/2024-01/variants/${numericId}.json`, {
     variant: { 
       id: parseInt(numericId), 
@@ -179,12 +179,42 @@ async function applyDiscount(variantId, discountPercent, tag) {
     }
   });
   
-  // Aggiungi tag al prodotto
   await addTagToProduct(variant.variant.product_id.toString(), tag);
   
   console.log(`   ✅ Variante ${numericId}: €${currentPrice} → €${discountedPrice} (sconto ${discountPercent}%)`);
 }
 
+async function restorePrice(variantId, tag) {
+  const numericId = variantId.split('/').pop();
+  
+  const variant = await restRequest('GET', `/admin/api/2024-01/variants/${numericId}.json`);
+  
+  if (!variant.variant) {
+    console.log(`   ⚠️ Variante ${numericId} non trovata`);
+    return;
+  }
+  
+  const metafields = await restRequest('GET', `/admin/api/2024-01/variants/${numericId}/metafields.json`);
+  const prezzoOriginale = metafields.metafields?.find(m => m.namespace === 'custom' && m.key === 'prezzo_originale');
+  
+  if (prezzoOriginale) {
+    await restRequest('PUT', `/admin/api/2024-01/variants/${numericId}.json`, {
+      variant: { 
+        id: parseInt(numericId), 
+        price: prezzoOriginale.value,
+        compare_at_price: null
+      }
+    });
+    
+    await restRequest('DELETE', `/admin/api/2024-01/metafields/${prezzoOriginale.id}.json`);
+    
+    console.log(`   ✅ Variante ${numericId}: Ripristinato a €${prezzoOriginale.value}`);
+  } else {
+    console.log(`   ⚠️ Variante ${numericId}: Prezzo originale non trovato, salto`);
+  }
+  
+  await removeTagFromProduct(variant.variant.product_id.toString(), tag);
+}
 
 // ========================================
 // FUNZIONE PRINCIPALE
@@ -193,7 +223,8 @@ async function applyDiscount(variantId, discountPercent, tag) {
 async function syncPromo() {
   console.log('🚀 Avvio sincronizzazione promo v2.0...\n');
   
-  // Leggi tutti i calendari promo
+  await initToken();
+  
   const query = `{
     metaobjects(type: "calendario_promo", first: 50) {
       edges {
@@ -247,12 +278,10 @@ async function syncPromo() {
     console.log(`   Stato: ${isActive ? '✅ ATTIVA' : isExpired ? '🔴 SCADUTA' : '🟡 PROGRAMMATA'}\n`);
     
     if (isActive) {
-      // Applica sconti e aggiungi tag
       for (const prod of prodotti) {
         await applyDiscount(prod.variant_id, prod.sconto_percentuale, tagEsclusione);
       }
     } else if (isExpired) {
-      // Ripristina prezzi e rimuovi tag
       for (const prod of prodotti) {
         await restorePrice(prod.variant_id, tagEsclusione);
       }
