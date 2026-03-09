@@ -2,7 +2,7 @@ name: Sincronizzazione Promo Automatica
 
 on:
   schedule:
-       - cron: '*/4 * * * *'
+    - cron: '*/4 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -23,13 +23,13 @@ jobs:
           ls -la *.js
           echo ""
           echo "=== CERCA 'metafieldsList' NEL FILE ==="
-          grep -n "metafieldsList" promo-sync.js || echo "NON TROVATO ✅"
+          grep -n "metafieldsList" promo-sync-v2.js || echo "NON TROVATO ✅"
           echo ""
           echo "=== CERCA 'metafieldDelete' NEL FILE ==="
-          grep -n "metafieldDelete" promo-sync.js || echo "NON TROVATO ❌"
+          grep -n "metafieldDelete" promo-sync-v2.js || echo "NON TROVATO ❌"
           echo ""
           echo "=== RIGHE 180-200 ==="
-          sed -n '180,200p' promo-sync.js
+          sed -n '180,200p' promo-sync-v2.js
           echo ""
           echo "=== ULTIMO COMMIT ==="
           git log --oneline -5
@@ -37,8 +37,8 @@ jobs:
           echo "=== BRANCH ATTUALE ==="
           git branch --show-current
           echo ""
-          echo "=== TUTTI I FILE promo-sync.js ==="
-          find . -name "promo-sync.js" -not -path "*/node_modules/*"
+          echo "=== TUTTI I FILE promo-sync ==="
+          find . -name "promo-sync*.js" -not -path "*/node_modules/*"
       
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -51,6 +51,6 @@ jobs:
       - name: Esegui sincronizzazione promo
         env:
           SHOPIFY_SHOP_DOMAIN: ${{ secrets.SHOPIFY_SHOP_DOMAIN }}
-          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
-          FULL_SYNC: 'true'
-        run: node promo-sync.js
+          SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
+          SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+        run: node promo-sync-v2.js
