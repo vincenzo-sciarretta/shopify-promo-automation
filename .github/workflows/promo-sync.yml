@@ -2,8 +2,10 @@ name: Sincronizzazione Promo Automatica
 
 on:
   schedule:
-    - cron: '*/4 * * * *'
-  workflow_dispatch:
+    - cron: '*/4 * * * *'  # Backup ogni 4 minuti
+  workflow_dispatch:       # Esecuzione manuale
+  repository_dispatch:     # ⭐ NUOVO: Chiamato da cron-job.org
+    types: [sync-promo]
 
 permissions:
   contents: read
