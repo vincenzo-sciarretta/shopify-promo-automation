@@ -279,7 +279,7 @@ async function syncPromo() {
     
     if (isActive) {
       for (const prod of prodotti) {
-        await applyDiscount(prod.variant_id, prod.sconto_percentuale, tagEsclusione);
+        await applyDiscount(prod.variant_id, prod.valore_sconto, tagEsclusione);
       }
     } else if (isExpired) {
       for (const prod of prodotti) {
