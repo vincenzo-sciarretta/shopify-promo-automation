@@ -1,15 +1,12 @@
 name: Sincronizzazione Promo Automatica
-
 on:
   schedule:
     - cron: '*/4 * * * *'  # Backup ogni 4 minuti
   workflow_dispatch:       # Esecuzione manuale
   repository_dispatch:     # ⭐ NUOVO: Chiamato da cron-job.org
     types: [sync-promo]
-
 permissions:
   contents: read
-
 jobs:
   sync-promo:
     runs-on: ubuntu-latest
@@ -53,6 +50,7 @@ jobs:
       - name: Esegui sincronizzazione promo
         env:
           SHOPIFY_SHOP_DOMAIN: ${{ secrets.SHOPIFY_SHOP_DOMAIN }}
-          SHOPIFY_CLIENT_ID: ${{ secrets.SHOPIFY_CLIENT_ID }}
-          SHOPIFY_CLIENT_SECRET: ${{ secrets.SHOPIFY_CLIENT_SECRET }}
+          SHOPIFY_CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          SHOPIFY_CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
         run: node promo-sync-v2.js
