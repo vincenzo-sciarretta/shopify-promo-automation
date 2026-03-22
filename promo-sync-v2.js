@@ -240,7 +240,7 @@ async function syncPromo() {
   }`;
   
   const response = await graphqlRequest(query);
-  const calendars = response.data.metaobjects.edges;
+  const calendars = response.data.metaobjects.nodes.map(node => ({ node }));
   
   console.log(`📋 Trovati ${calendars.length} calendari promo\n`);
   
