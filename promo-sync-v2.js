@@ -227,19 +227,23 @@ async function syncPromo() {
   
   const query = `{
     metaobjects(type: "calendario_promo", first: 50) {
-      edges {
-        node {
-          id
-          fields {
-            key
-            value
-          }
+      nodes {
+        id
+        fields {
+          key
+          value
         }
       }
     }
   }`;
   
   const response = await graphqlRequest(query);
+
+  if (!response.data || !response.data.metaobjects) {
+    console.error('❌ Risposta API non valida:', JSON.stringify(response));
+    process.exit(1);
+  }
+
   const calendars = response.data.metaobjects.nodes.map(node => ({ node }));
   
   console.log(`📋 Trovati ${calendars.length} calendari promo\n`);
